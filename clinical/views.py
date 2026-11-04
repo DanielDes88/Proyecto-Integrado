@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from django.http import JsonResponse, HttpResponse
 from django.shortcuts import render, redirect
 from django.contrib.auth import login, logout
@@ -9,8 +10,13 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 from django.views.decorators.cache import never_cache
 from django.db import IntegrityError, OperationalError
+from django.utils.text import get_valid_filename
 from .demo import workspace, serialize, catalog, act, DemoError, profile
+from .document_store import delete_document, read_document, save_document
+from .models import Appointment, ClinicalDocument
 logger = logging.getLogger(__name__)
+MAX_DOCUMENT_SIZE = 10 * 1024 * 1024
+DOCUMENT_CATEGORIES = {label for value, label in ClinicalDocument.CATEGORIES}
 
 @ensure_csrf_cookie
 @never_cache
@@ -36,6 +42,91 @@ def portal(request, role):
 def state_view(request):
     try: return JsonResponse({'state':serialize(workspace(request), request.user), 'services':catalog()})
     except DemoError as e: return JsonResponse({'error':e.message},status=e.status)
+
+@never_cache
+@require_GET
+def documents_view(request):
+    try:
+        p = profile(request.user)
+        documents = ClinicalDocument.objects.select_related('patient', 'appointment', 'uploaded_by')
+        if p.role == 'paciente': documents = documents.filter(patient=request.user)
+        elif p.role == 'profesional': documents = documents.filter(appointment__professional=request.user)
+        else: documents = documents.filter(uploaded_by=request.user)
+        return JsonResponse({'documents': [{
+            'id': d.pk, 'category': d.category, 'name': d.original_name,
+            'appointment': d.appointment_id, 'patient': d.patient.get_full_name(),
+            'uploaded_by': d.uploaded_by.get_full_name(), 'created_at': d.created_at.isoformat(),
+            'size': d.size,
+        } for d in documents]})
+    except DemoError as e: return JsonResponse({'error':e.message},status=e.status)
+
+@never_cache
+@require_POST
+def document_upload_view(request):
+    try:
+        p = profile(request.user)
+        uploaded = request.FILES.get('file')
+        if not uploaded: return JsonResponse({'error':'Selecciona un archivo.'},status=400)
+        if uploaded.size > MAX_DOCUMENT_SIZE:
+            return JsonResponse({'error':'El archivo supera el límite de 10 MiB.'},status=413)
+        category = request.POST.get('category', '')
+        if category not in DOCUMENT_CATEGORIES:
+            return JsonResponse({'error':'Selecciona una categoría válida.'},status=400)
+        match = re.fullmatch(r'GC-(\d+)', request.POST.get('appointment', ''))
+        if not match: return JsonResponse({'error':'Selecciona una atención válida.'},status=400)
+        appointments = Appointment.objects.filter(workspace=p.workspace, pk=int(match.group(1)))
+        if p.role == 'paciente': appointments = appointments.filter(patient=request.user)
+        elif p.role == 'profesional': appointments = appointments.filter(professional=request.user)
+        appointment = appointments.select_related('patient').first()
+        if not appointment or not appointment.patient_id:
+            return JsonResponse({'error':'No tienes permiso para asociar el documento a esa atención.'},status=404)
+        data = uploaded.read(MAX_DOCUMENT_SIZE + 1)
+        if len(data) > MAX_DOCUMENT_SIZE:
+            return JsonResponse({'error':'El archivo supera el límite de 10 MiB.'},status=413)
+        if data.startswith(b'%PDF-'): content_type = 'application/pdf'
+        elif data.startswith(b'\x89PNG\r\n\x1a\n'): content_type = 'image/png'
+        elif data.startswith(b'\xff\xd8\xff'): content_type = 'image/jpeg'
+        else: return JsonResponse({'error':'Solo se aceptan PDF, PNG o JPEG válidos.'},status=400)
+        filename = get_valid_filename(uploaded.name)[:120] or 'documento'
+        mongo_id = save_document(data, content_type)
+        try:
+            ClinicalDocument.objects.create(
+                patient=appointment.patient, appointment=appointment, uploaded_by=request.user,
+                category=category, original_name=filename, content_type=content_type,
+                size=len(data), mongo_id=mongo_id,
+            )
+        except Exception:
+            try: delete_document(mongo_id)
+            except Exception: logger.exception('No se pudo limpiar un archivo MongoDB huérfano')
+            raise
+        return JsonResponse({'ok':True})
+    except DemoError as e: return JsonResponse({'error':e.message},status=e.status)
+    except Exception:
+        logger.exception('No se pudo guardar el documento clínico')
+        return JsonResponse({'error':'No se pudo guardar el documento. Revisa la conexión con MongoDB e inténtalo nuevamente.'},status=503)
+
+@never_cache
+@require_GET
+def document_download_view(request, document_id):
+    try:
+        p = profile(request.user)
+        documents = ClinicalDocument.objects.filter(pk=document_id)
+        if p.role == 'paciente': documents = documents.filter(patient=request.user)
+        elif p.role == 'profesional': documents = documents.filter(appointment__professional=request.user)
+        else: documents = documents.filter(uploaded_by=request.user)
+        document = documents.first()
+        if not document: return HttpResponse(status=404)
+        content = read_document(document.mongo_id)
+        if content is None: return HttpResponse('Documento no disponible.',status=404)
+        response = HttpResponse(content, content_type='application/octet-stream')
+        response['Content-Disposition'] = f'attachment; filename="{document.original_name.replace(chr(34), "")}"'
+        response['X-Content-Type-Options'] = 'nosniff'
+        response['Cache-Control'] = 'private, no-store'
+        return response
+    except DemoError as e: return JsonResponse({'error':e.message},status=e.status)
+    except Exception:
+        logger.exception('No se pudo descargar el documento clínico')
+        return HttpResponse('Almacenamiento de documentos no disponible.',status=503)
 
 @never_cache
 @require_POST

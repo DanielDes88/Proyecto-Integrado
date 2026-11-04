@@ -1,12 +1,14 @@
 """Permisos por rol, acceso a objetos y recorridos del prototipo."""
 import uuid
 from datetime import timedelta
+from unittest.mock import patch
 from django.test import TestCase, Client
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
-from .models import Appointment, Service, UserProfile
+from .models import Appointment, ClinicalDocument, Service, UserProfile
 
 class RoleTests(TestCase):
     @classmethod
@@ -110,6 +112,48 @@ class RoleTests(TestCase):
         self.assertEqual(self.client.get('/admin/').status_code,302)
         self.client.post('/logout/',HTTP_X_CSRFTOKEN=self.client.cookies['csrftoken'].value)
         self.assertEqual(self.client.get('/api/state/').status_code,401)
+    def test_document_upload_metadata_access_and_download(self):
+        appointment=Appointment.objects.filter(patient__username='paciente').first()
+        content=b'%PDF-1.7\nclinical test document'
+        upload=SimpleUploadedFile('receta.pdf',content,content_type='application/pdf')
+        client=self.clients['paciente']
+        with patch('clinical.views.save_document',return_value='0123456789abcdef01234567') as save:
+            response=client.post('/api/documents/upload/',{
+                'file':upload,'category':'Receta médica','appointment':appointment.code,
+            },HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        self.assertEqual(response.status_code,200)
+        save.assert_called_once_with(content,'application/pdf')
+        document=ClinicalDocument.objects.get()
+        self.assertEqual(document.patient.username,'paciente')
+        self.assertEqual(document.uploaded_by.username,'paciente')
+        self.assertEqual(document.mongo_id,'0123456789abcdef01234567')
+        self.assertEqual(len(client.get('/api/documents/').json()['documents']),1)
+        self.assertEqual(len(self.clients['profesional'].get('/api/documents/').json()['documents']),1)
+        self.assertEqual(self.clients['admin'].get('/api/documents/').json()['documents'],[])
+        with patch('clinical.views.read_document',return_value=content):
+            downloaded=self.clients['profesional'].get(f'/api/documents/{document.pk}/download/')
+        self.assertEqual(downloaded.status_code,200)
+        self.assertEqual(downloaded.content,content)
+        self.assertIn('attachment',downloaded['Content-Disposition'])
+        self.assertEqual(self.clients['admin'].get(f'/api/documents/{document.pk}/download/').status_code,404)
+    def test_document_upload_rejects_unrelated_user_and_unsupported_content(self):
+        appointment=Appointment.objects.filter(patient__username='paciente').first()
+        other=get_user_model().objects.create_user('otro_doc',password='Demo123456!')
+        UserProfile.objects.create(user=other,role='paciente',workspace=UserProfile.objects.get(user__username='paciente').workspace)
+        other_client=Client()
+        other_client.force_login(other)
+        unrelated=other_client.post('/api/documents/upload/',{
+            'file':SimpleUploadedFile('orden.pdf',b'%PDF-1.7\nprueba'),
+            'category':'Orden médica','appointment':appointment.code,
+        })
+        self.assertEqual(unrelated.status_code,404)
+        client=self.clients['paciente']
+        unsupported=client.post('/api/documents/upload/',{
+            'file':SimpleUploadedFile('archivo.pdf',b'not a PDF'),
+            'category':'Diagnóstico','appointment':appointment.code,
+        },HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        self.assertEqual(unsupported.status_code,400)
+        self.assertEqual(ClinicalDocument.objects.count(),0)
     def test_seed_repeat_does_not_reset_password(self):
         user=get_user_model().objects.get(username='paciente');user.set_password('OtraClave123!');user.save()
         count=Appointment.objects.count();call_command('preparar_demo',verbosity=0)

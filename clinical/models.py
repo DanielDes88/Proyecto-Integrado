@@ -85,3 +85,20 @@ class UserProfile(models.Model):
     workspace = models.ForeignKey(DemoWorkspace,on_delete=models.PROTECT)
     bill_sent = models.BooleanField(default=False)
     def __str__(self): return f'{self.user.username} — {self.get_role_display()}'
+
+class ClinicalDocument(models.Model):
+    CATEGORIES = [(x, x) for x in ["Receta médica", "Orden médica", "Diagnóstico", "Examen", "Otro"]]
+    patient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="clinical_documents")
+    appointment = models.ForeignKey(Appointment, on_delete=models.PROTECT, related_name="documents")
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="uploaded_clinical_documents")
+    category = models.CharField(max_length=30, choices=CATEGORIES)
+    original_name = models.CharField(max_length=120)
+    content_type = models.CharField(max_length=40)
+    size = models.PositiveIntegerField()
+    mongo_id = models.CharField(max_length=24, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self): return f"{self.category} · {self.patient_id}"

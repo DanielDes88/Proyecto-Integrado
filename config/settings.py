@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 BASE_DIR = Path(__file__).resolve().parent.parent
 # Configuración de desarrollo local. No usar con datos reales de pacientes.
@@ -13,7 +14,11 @@ MIDDLEWARE = ["django.middleware.security.SecurityMiddleware", "django.contrib.s
 ROOT_URLCONF = "config.urls"
 TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIRS": [], "APP_DIRS": True, "OPTIONS": {"context_processors": ["django.template.context_processors.request", "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages"]}}]
 WSGI_APPLICATION = "config.wsgi.application"
-DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3", "OPTIONS": {"timeout": 20}}}
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_CONN_MAX_AGE = int(os.environ.get("DATABASE_CONN_MAX_AGE", "0"))
+DATABASES = {"default": dj_database_url.parse(DATABASE_URL, conn_max_age=DATABASE_CONN_MAX_AGE, ssl_require=True) if DATABASE_URL else {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3", "OPTIONS": {"timeout": 20}}}
+MONGODB_URI = os.environ.get("MONGODB_URI", "")
+MONGODB_DATABASE = os.environ.get("MONGODB_DATABASE", "goclinical")
 AUTH_PASSWORD_VALIDATORS = [
  {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
  {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},

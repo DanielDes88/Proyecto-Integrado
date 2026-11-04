@@ -112,6 +112,58 @@ Abre http://127.0.0.1:8000/admin/ con la cuenta que acabas de crear. Allí se pu
 | `clinical/migrations/` | Migraciones completas, incluida la incorporación de roles |
 | `clinical/tests.py` | Pruebas de acceso, propiedad, operaciones y flujo entre usuarios |
 
+## Bases de datos y documentos
+
+Django usa SQLite (`db.sqlite3`) por defecto para desarrollo local. Para usar PostgreSQL, configura `DATABASE_URL` con la URL de conexión de Neon antes de iniciar Django. La configuración requiere SSL y usa el driver Psycopg incluido en `requirements.txt`. `DATABASE_CONN_MAX_AGE` controla conexiones persistentes; queda en `0` por defecto para compatibilidad inicial con Neon Pooler. Ejecuta `manage.py migrate` para crear el esquema en la base indicada. Este comando **no copia datos desde SQLite**; `db.sqlite3` queda intacta y la migración de registros debe planificarse por separado.
+
+### Configurar Neon paso a paso
+
+1. En Neon, crea un proyecto PostgreSQL y copia la cadena de conexión. Mantén la contraseña privada. Para ejecutar migraciones puedes usar la conexión directa; para ejecutar la aplicación puedes usar la cadena pooled de Neon. Ambas deben incluir SSL.
+2. Desde la carpeta del proyecto, activa el entorno e instala dependencias si aún no lo hiciste: `source .venv/bin/activate` y `pip install -r requirements.txt`.
+3. En la misma terminal, exporta la cadena directa de Neon. No la guardes en Git ni la pegues en el chat:
+
+	```bash
+	export DATABASE_URL='postgresql://USUARIO:CLAVE@HOST_NEON/BASE?sslmode=require'
+	```
+
+	En PowerShell usa `$env:DATABASE_URL = 'postgresql://USUARIO:CLAVE@HOST_NEON/BASE?sslmode=require'`. Si la clave contiene caracteres especiales, usa la URL ya codificada que entrega Neon.
+4. Comprueba qué motor cargó Django sin conectar ni modificar datos:
+
+	```bash
+	python manage.py shell -c "from django.conf import settings; print(settings.DATABASES['default']['ENGINE'])"
+	```
+
+	Debe mostrar `django.db.backends.postgresql`. Si muestra SQLite, no continúes: `DATABASE_URL` no llegó al proceso.
+5. Revisa el plan y aplica el esquema en Neon:
+
+	```bash
+	python manage.py check
+	python manage.py migrate --plan
+	python manage.py migrate
+	python manage.py showmigrations
+	```
+
+	Esto crea tablas de Django, sesiones, `clinical` y documentos. No cambia `db.sqlite3` ni importa sus registros.
+6. Para crear solo las cuentas y datos ficticios de demostración en Neon, ejecuta `python manage.py preparar_demo`. No lo uses como mecanismo para trasladar datos reales.
+7. Para iniciar la aplicación usando Neon, conserva `DATABASE_URL` en esa misma terminal y ejecuta `python manage.py runserver`. Para usar la conexión pooled en ejecución, reemplaza el valor por la cadena pooled de Neon. El valor `DATABASE_CONN_MAX_AGE=0` recomendado no mantiene conexiones persistentes.
+8. Cuando cierres la terminal, esas variables desaparecen. Configúralas en el entorno del despliegue o expórtalas de nuevo para otra sesión. No es necesario ni recomendable escribir contraseñas en `settings.py`.
+
+La primera vez que se use Neon, `showmigrations` mostrará migraciones pendientes allí aunque SQLite ya tenga varias aplicadas. Esto es normal: son bases independientes.
+
+### Trasladar los registros actuales
+
+Crear el esquema y copiar datos son tareas distintas. La aplicación no hace la copia automáticamente. Antes de trasladar registros desde `db.sqlite3`, respalda el archivo, define una ventana de mantenimiento y valida una exportación/importación en una base Neon vacía. No uses `preparar_demo` para copiar. Los metadatos de documentos se guardan en PostgreSQL, pero los bytes están en MongoDB y deben permanecer o trasladarse por un procedimiento separado; cambiar `DATABASE_URL` no mueve archivos entre servicios. No ejecutes una importación de datos reales hasta haber verificado relaciones, conteos y acceso a los documentos.
+
+Los documentos se guardan en dos partes: PostgreSQL (o SQLite local) contiene el registro relacional, propietario, cita, categoría y referencia; MongoDB conserva el contenido como BSON `Binary` en la colección `clinical_documents`, sin GridFS. Configura `MONGODB_URI` y, opcionalmente, `MONGODB_DATABASE` (por defecto `goclinical`). La conexión usa TLS. El límite de carga es 10 MiB y solo se aceptan PDF, PNG y JPEG reconocidos por su firma.
+
+Contrato backend para integrar la interfaz:
+
+- `GET /api/documents/` lista metadatos visibles para el usuario autenticado.
+- `POST /api/documents/upload/` recibe `multipart/form-data` con `file`, `category` y `appointment` (folio `GC-...`); requiere sesión y CSRF.
+- `GET /api/documents/<id>/download/` transmite el contenido como archivo adjunto solo si el usuario conserva acceso.
+
+Pacientes acceden a documentos propios y profesionales a documentos de citas asignadas. Administración no obtiene acceso general al contenido: solo ve o descarga archivos que subió. No hay transacción distribuida entre PostgreSQL y MongoDB; si falla el alta de metadatos, Django intenta borrar el BSON recién guardado. Esta función no incorpora análisis antimalware ni política de retención y no debe habilitarse con documentos clínicos reales antes de una revisión de seguridad, privacidad y requisitos legales.
+
 ## Validación y límites
 
 ```powershell
