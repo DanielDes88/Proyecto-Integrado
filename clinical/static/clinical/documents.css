@@ -1,0 +1,16 @@
+.document-panel{padding:24px}
+.document-panel .document-heading{margin-bottom:20px}
+.document-panel .document-notice{background:#e9f7f8;border-color:#d5edef;color:#397781}
+.document-panel .row{margin-right:0;margin-left:0}
+.document-panel .form-control:focus,.document-panel .form-select:focus{border-color:#309dad;box-shadow:0 0 0 .25rem #309dad33}
+.document-panel .btn-primary{--bs-btn-color:#fff;--bs-btn-bg:#309dad;--bs-btn-border-color:#309dad;--bs-btn-hover-color:#fff;--bs-btn-hover-bg:#0d8e92;--bs-btn-hover-border-color:#0d8e92;--bs-btn-active-bg:#0d8e92;--bs-btn-active-border-color:#0d8e92;--bs-btn-disabled-bg:#9abdc1;--bs-btn-disabled-border-color:#9abdc1}
+.document-panel .btn-outline-primary{--bs-btn-color:#168796;--bs-btn-border-color:#b9dfe4;--bs-btn-hover-color:#fff;--bs-btn-hover-bg:#309dad;--bs-btn-hover-border-color:#309dad}
+.document-panel .btn:focus-visible{box-shadow:0 0 0 .25rem #309dad40}
+.document-panel .document-icon{display:grid;width:40px;height:40px;flex:0 0 40px;place-items:center;border-radius:9px;background:#e8f6f7;color:#309dad;font-size:20px}
+.document-panel .document-file-meta{min-width:0}
+.document-panel .document-list-heading{margin:28px 0 12px;padding-top:22px;border-top:1px solid #e4e8eb}
+.document-panel .list-group-item{padding:16px 0;border-color:#e4e8eb}
+.document-panel .list-group-item:first-child{padding-top:0}
+.document-panel .list-group-item:last-child{padding-bottom:0}
+.document-panel .list-group-item h3{overflow-wrap:anywhere}
+@media(max-width:575.98px){.document-panel{padding:20px}}

@@ -52,7 +52,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 - Ver únicamente las atenciones que tiene asignadas.
 - Avanzar Confirmada → En camino → En atención → Finalizada.
 - Crear o quitar bloques de disponibilidad, rechazando solapamientos.
-- Consultar servicios y su perfil; ver un ejemplo de certificados sin carga de documentos reales.
+- Consultar servicios y su perfil; cargar y descargar documentos vinculados a atenciones.
 - Consultar honorarios ilustrativos (70 % del precio histórico) y registrar el envío de una boleta ficticia.
 
 ### Administrador
@@ -82,7 +82,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 - Adaptación web responsive: el contenido y la barra lateral ocupan columnas independientes; en pantallas pequeñas el menú pasa a una fila desplazable. No se usan imágenes de las pantallas originales como sustituto de botones o formularios.
 - Tipografía de sistema Helvetica Neue/Helvetica/Arial; no se distribuyen fuentes comerciales.
 
-La propuesta es una adaptación funcional y simplificada; no reproduce todas las pantallas de los PDFs. No hay login con Google/Apple, mapas reales, chat, notificaciones externas, carga de certificados, reprogramación, visitas recurrentes ni emisión tributaria. Las vistas de certificados y boletas indican expresamente que son ejemplos.
+La propuesta es una adaptación funcional y simplificada; no reproduce todas las pantallas de los PDFs. No hay login con Google/Apple, mapas reales, chat, notificaciones externas, revisión de certificados, reprogramación, visitas recurrentes ni emisión tributaria. Las boletas indican expresamente que son ejemplos.
 
 ## Panel nativo de Django
 
@@ -154,9 +154,9 @@ La primera vez que se use Neon, `showmigrations` mostrará migraciones pendiente
 
 Crear el esquema y copiar datos son tareas distintas. La aplicación no hace la copia automáticamente. Antes de trasladar registros desde `db.sqlite3`, respalda el archivo, define una ventana de mantenimiento y valida una exportación/importación en una base Neon vacía. No uses `preparar_demo` para copiar. Los metadatos de documentos se guardan en PostgreSQL, pero los bytes están en MongoDB y deben permanecer o trasladarse por un procedimiento separado; cambiar `DATABASE_URL` no mueve archivos entre servicios. No ejecutes una importación de datos reales hasta haber verificado relaciones, conteos y acceso a los documentos.
 
-Los documentos se guardan en dos partes: PostgreSQL (o SQLite local) contiene el registro relacional, propietario, cita, categoría y referencia; MongoDB conserva el contenido como BSON `Binary` en la colección `clinical_documents`, sin GridFS. Configura `MONGODB_URI` y, opcionalmente, `MONGODB_DATABASE` (por defecto `goclinical`). La conexión usa TLS. El límite de carga es 10 MiB y solo se aceptan PDF, PNG y JPEG reconocidos por su firma.
+Los documentos se guardan en dos partes: PostgreSQL (o SQLite local) contiene el registro relacional, propietario, cita, categoría y referencia; MongoDB conserva el contenido como BSON `Binary` en la colección `clinical_documents`, sin GridFS. Configura `MONGODB_URI` y, opcionalmente, `MONGODB_DATABASE` (por defecto `goclinical`). La conexión usa TLS. No necesitas configurar Neon para desarrollar con SQLite local; sí necesitas MongoDB para cargar y descargar archivos. La interfaz está en Mi perfil para pacientes y profesionales y usa Bootstrap 5.3 para el formulario y el listado responsivos. El límite de carga es 10 MiB y solo se aceptan PDF, PNG y JPEG reconocidos por su firma.
 
-Contrato backend para integrar la interfaz:
+La interfaz usa estas APIs:
 
 - `GET /api/documents/` lista metadatos visibles para el usuario autenticado.
 - `POST /api/documents/upload/` recibe `multipart/form-data` con `file`, `category` y `appointment` (folio `GC-...`); requiere sesión y CSRF.
@@ -175,7 +175,7 @@ Se aplican sesiones Django, contraseñas con hash del framework, CSRF, consultas
 
 La reserva utiliza horarios fijos y rechaza solapamientos entre visitas del espacio de demostración; no calcula disponibilidad a partir de los bloques del profesional. El primer profesional activo del espacio se asigna automáticamente. El alcance está pensado para las tres cuentas iniciales y una presentación local, no para un marketplace con asignación concurrente real.
 
-Las APIs reciben información ficticia y no procesan dinero ni documentos clínicos. SQLite, DEBUG de desarrollo y las credenciales de ejemplo no son una configuración de producción. Para uso real se requieren revisión de seguridad, asignación profesional, infraestructura y reglas de negocio definitivas.
+Los pagos son simulados. Aunque el prototipo permite cargar archivos, no se deben subir documentos clínicos reales: faltan análisis antimalware, políticas de retención y una revisión completa de seguridad, privacidad y requisitos legales. SQLite, DEBUG de desarrollo y las credenciales de ejemplo no son una configuración de producción.
 
 Si actualizas sobre una copia anterior: respalda `db.sqlite3`, ejecuta `migrate` y `preparar_demo`. Los registros anónimos de la versión anterior se conservan en su espacio original; no se asignan automáticamente a las cuentas nuevas. La opción recomendada para esta entrega es extraer en carpeta nueva.
 
