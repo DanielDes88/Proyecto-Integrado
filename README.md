@@ -154,19 +154,96 @@ La primera vez que se use Neon, `showmigrations` mostrará migraciones pendiente
 
 Crear el esquema y copiar datos son tareas distintas. La aplicación no hace la copia automáticamente. Antes de trasladar registros desde `db.sqlite3`, respalda el archivo, define una ventana de mantenimiento y valida una exportación/importación en una base Neon vacía. No uses `preparar_demo` para copiar. Los metadatos de documentos se guardan en PostgreSQL, pero los bytes están en MongoDB y deben permanecer o trasladarse por un procedimiento separado; cambiar `DATABASE_URL` no mueve archivos entre servicios. No ejecutes una importación de datos reales hasta haber verificado relaciones, conteos y acceso a los documentos.
 
-Los documentos se guardan en dos partes: PostgreSQL (o SQLite local) contiene el registro relacional, propietario, cita, categoría y referencia; MongoDB conserva el contenido como BSON `Binary` en la colección `clinical_documents`, sin GridFS. Configura `MONGODB_URI`, opcionalmente `MONGODB_DATABASE` (por defecto `goclinical`) y `MONGODB_TLS` (`1` por defecto; usa `0` solo para una instancia local sin TLS). La conexión se comprueba mediante `ping` y crea un índice por fecha al abrir la colección. No necesitas configurar Neon para desarrollar con SQLite local; sí necesitas MongoDB para cargar y descargar archivos. La interfaz está en Mi perfil para pacientes y profesionales y usa Bootstrap 5.3 para el formulario y el listado responsivos. El límite de carga es 10 MiB y solo se aceptan PDF, PNG y JPEG reconocidos por su firma.
+Los documentos se guardan en dos partes: PostgreSQL (o SQLite local) contiene el registro relacional, propietario, cita, categoría y referencia; MongoDB conserva el contenido como BSON `Binary` en la colección `clinical_documents`, sin GridFS. La conexión se comprueba mediante `ping` y crea un índice por fecha al abrir la colección. No necesitas configurar Neon para desarrollar con SQLite local; sí necesitas MongoDB para cargar y descargar archivos. La interfaz está en Mi perfil para pacientes y profesionales y usa Bootstrap 5.3 para el formulario y el listado responsivos. El límite de carga es 10 MiB y solo se aceptan PDF, PNG y JPEG reconocidos por su firma.
 
-En PowerShell, antes de iniciar Django, configura la conexión sin guardar credenciales en el repositorio:
+### Conectar MongoDB Atlas
+
+Estos pasos deben completarse antes de cargar documentos:
+
+1. En [MongoDB Atlas](https://www.mongodb.com/atlas), crea un proyecto y un clúster.
+2. En **Security → Database Access**, crea un **Database User** para la aplicación. Esta contraseña es independiente de la contraseña de tu cuenta de Atlas. Asígnale permisos `readWrite` sobre la base `goclinical`.
+3. En **Security → Network Access**, agrega la IP pública desde la que ejecutarás Django con **Add My Current IP Address**. Si cambia tu red, tendrás que actualizar esta regla. No uses `0.0.0.0/0` salvo para una prueba temporal.
+4. En el clúster, selecciona **Connect → Drivers**, elige **Python** y copia la connection string. Debe comenzar con `mongodb+srv://`.
+5. Reemplaza `USUARIO`, `CONTRASEÑA` y el host del clúster. Si la contraseña contiene caracteres especiales, codifícala para URL (`@` → `%40`, `#` → `%23`, `:` → `%3A`, `/` → `%2F`).
+6. Desde PowerShell, en la raíz del proyecto, configura la connection string en la misma terminal donde ejecutarás Django:
 
 ```powershell
 $env:MONGODB_URI = "mongodb+srv://USUARIO:CONTRASEÑA@CLUSTER/..."
 $env:MONGODB_DATABASE = "goclinical"
 $env:MONGODB_TLS = "1"
+```
+
+`MONGODB_TLS=1` es la configuración recomendada para Atlas. Estas variables duran mientras la terminal permanezca abierta; no guardes la connection string en Git, README, `.env` versionado ni la compartas por chat.
+
+Comprueba que las variables estén presentes sin imprimir la contraseña:
+
+```powershell
+Write-Host "URI configurada: $([bool]$env:MONGODB_URI)"
+Write-Host "Base configurada: $env:MONGODB_DATABASE"
+Write-Host "TLS configurado: $env:MONGODB_TLS"
+```
+
+Instala las dependencias y verifica la aplicación y la conexión:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe manage.py check
 .\.venv\Scripts\python.exe manage.py check_mongodb
 ```
 
-Si `MONGODB_URI` no está configurada o MongoDB no responde, la aplicación permanece disponible, pero la carga y descarga de documentos responden con error de almacenamiento; no se aceptan documentos parcialmente guardados.
+El resultado esperado de `check_mongodb` es:
+
+```text
+Conexión a MongoDB verificada.
+```
+
+Si aparece un error de autenticación, revisa el usuario y la contraseña de **Database Access**. Si aparece un timeout, revisa **Network Access**, que el clúster esté activo y que la red permita la conexión. Si `MONGODB_URI` no está configurada o MongoDB no responde, la aplicación permanece disponible, pero la carga y descarga de documentos responden con error de almacenamiento; no se aceptan documentos parcialmente guardados.
+
+### Compartir la configuración de prueba con el equipo
+
+La connection string de Atlas **no debe subirse al repositorio** ni compartirse en el chat o en archivos versionados. Cada integrante debe configurarla como variable de entorno en su propia terminal. El archivo `.env`, si se usa localmente, está excluido por `.gitignore`.
+
+Para publicar los cambios en `dev`, revisa primero que no haya secretos ni archivos privados y ejecuta:
+
+```powershell
+git status
+git diff --check
+git add requirements.txt config/settings.py clinical/document_store.py clinical/management/commands/check_mongodb.py README.md
+git commit -m "Integra almacenamiento de documentos con MongoDB"
+git pull --rebase origin dev
+git push origin dev
+```
+
+Si tienes cambios locales sin confirmar en `requirements.txt` u otro archivo, guárdalos con `git stash` antes de cambiar de rama o actualizar `dev`. Revisa siempre `git status` y `git diff` antes de confirmar.
+
+En Atlas, crea un usuario de base de datos exclusivo para las pruebas con permisos `readWrite` sobre `goclinical`. No compartas la contraseña de tu cuenta de Atlas. En **Security → Network Access**, agrega la IP pública de cada integrante con **Add My Current IP Address**. La regla `0.0.0.0/0` solo debe usarse temporalmente y eliminarse después de la prueba.
+
+Cada compañero debe preparar su copia local con:
+
+```powershell
+cd C:\ruta\Proyecto-Integrado
+git switch dev
+git pull --ff-only origin dev
+py -3.15 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py preparar_demo
+```
+
+En la misma terminal, debe configurar su connection string privada y comprobar MongoDB:
+
+```powershell
+$env:MONGODB_URI = "mongodb+srv://USUARIO:CONTRASEÑA@CLUSTER.mongodb.net/?retryWrites=true&w=majority"
+$env:MONGODB_DATABASE = "goclinical"
+$env:MONGODB_TLS = "1"
+.\.venv\Scripts\python.exe manage.py check
+.\.venv\Scripts\python.exe manage.py check_mongodb
+.\.venv\Scripts\python.exe manage.py runserver
+```
+
+Las variables `$env:MONGODB_*` duran mientras permanezca abierta esa terminal. Si se abre otra, deben configurarse nuevamente. Si la contraseña contiene caracteres especiales, debe estar codificada para URL; por ejemplo, `@` se escribe como `%40`.
+
+MongoDB Atlas almacena los bytes de los documentos en `goclinical.clinical_documents`. Los usuarios, citas, permisos y metadata permanecen en la base relacional configurada por Django. Con SQLite local, cada integrante tendrá sus propios usuarios y citas de demostración aunque todos utilicen el mismo MongoDB; para compartir también esos datos se necesita una base relacional común, como PostgreSQL.
 
 La interfaz usa estas APIs:
 
