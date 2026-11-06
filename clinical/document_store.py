@@ -12,8 +12,20 @@ def _collection():
     uri = getattr(settings, "MONGODB_URI", "")
     if not uri:
         raise RuntimeError("MONGODB_URI no está configurada.")
-    client = MongoClient(uri, serverSelectionTimeoutMS=5000, tls=True)
-    return client[settings.MONGODB_DATABASE]["clinical_documents"]
+    client = MongoClient(
+        uri,
+        serverSelectionTimeoutMS=5000,
+        tls=getattr(settings, "MONGODB_TLS", True),
+    )
+    collection = client[settings.MONGODB_DATABASE]["clinical_documents"]
+    collection.create_index("created_at")
+    return collection
+
+
+def check_connection():
+    """Comprueba que MongoDB está configurado y acepta conexiones."""
+    collection = _collection()
+    collection.database.client.admin.command("ping")
 
 
 def save_document(data, content_type):
@@ -32,6 +44,8 @@ def save_document(data, content_type):
 def read_document(mongo_id):
     from bson import ObjectId
 
+    if not ObjectId.is_valid(mongo_id):
+        return None
     record = _collection().find_one({"_id": ObjectId(mongo_id)}, {"content": 1})
     return bytes(record["content"]) if record else None
 
@@ -39,4 +53,6 @@ def read_document(mongo_id):
 def delete_document(mongo_id):
     from bson import ObjectId
 
-    _collection().delete_one({"_id": ObjectId(mongo_id)})
+    if not ObjectId.is_valid(mongo_id):
+        return False
+    return _collection().delete_one({"_id": ObjectId(mongo_id)}).deleted_count == 1

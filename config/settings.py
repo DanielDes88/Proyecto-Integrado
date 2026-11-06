@@ -19,6 +19,7 @@ DATABASE_CONN_MAX_AGE = int(os.environ.get("DATABASE_CONN_MAX_AGE", "0"))
 DATABASES = {"default": dj_database_url.parse(DATABASE_URL, conn_max_age=DATABASE_CONN_MAX_AGE, ssl_require=True) if DATABASE_URL else {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3", "OPTIONS": {"timeout": 20}}}
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 MONGODB_DATABASE = os.environ.get("MONGODB_DATABASE", "goclinical")
+MONGODB_TLS = os.environ.get("MONGODB_TLS", "1").lower() in {"1", "true", "yes"}
 AUTH_PASSWORD_VALIDATORS = [
  {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
  {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
