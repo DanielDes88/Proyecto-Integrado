@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime, time, timedelta
 from django.db import transaction
 from django.utils import timezone
-from .models import Service, DemoWorkspace, Appointment, Applicant, Review, Availability, UserProfile
+from .models import Service, DemoWorkspace, Appointment, Applicant, Review, Availability, UserProfile, TripLocation
 
 DAYS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
 TIMES = ['09:00','10:00','11:30','14:00','16:00']
@@ -119,6 +119,8 @@ def act(w, payload, user):
             if payload.get('expected_status') != a.status: raise DemoError('El estado cambió. Actualiza la vista.',409)
             a.status = transitions[a.status]
         a.save(update_fields=['status'])
+        if a.status != 'En camino':
+            TripLocation.objects.filter(appointment=a).delete()
     elif action in ['approve','reject']:
         a = Applicant.objects.filter(workspace=w,pk=integer(payload.get('id'))).first()
         if not a: raise DemoError('Postulación no encontrada.',404)

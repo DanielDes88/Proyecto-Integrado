@@ -285,3 +285,33 @@ Referencias técnicas: documentación oficial de Django 5.2 sobre autenticación
 La ruta `/` muestra la presentación pública de GoClinical, el catálogo de servicios, cómo funciona y preguntas frecuentes. No requiere una cuenta. El botón Iniciar sesión lleva al acceso existente; con sesión iniciada aparece Ir a mi portal. Los portales incluyen Ver sitio público y cerrar sesión devuelve a la página pública. El catálogo comparte los servicios de SQLite; no se exponen citas, pacientes ni otros datos privados. No se incorporó registro público.
 
 Archivos: `clinical/templates/clinical/public.html` y `clinical/static/clinical/public.css`.
+
+## Seguimiento de una visita con Google Maps
+
+El portal profesional puede enviar la ubicación del dispositivo durante una visita en estado **En camino**. El paciente asignado la ve en **Mi perfil → Seguimiento de mi visita**, junto con el destino y una estimación en automóvil con tráfico cuando Google Routes dispone de una ruta. La posición se solicita cada 10 segundos aproximadamente, el paciente consulta cada 5 segundos y el tiempo de llegada se vuelve a pedir aproximadamente cada minuto mientras se ve el mapa.
+
+### Configuración
+
+1. En Google Cloud, habilita la facturación y activa **Maps JavaScript API** y **Routes API**.
+2. Crea dos claves. Restringe la clave del navegador a **Maps JavaScript API** y a los sitios autorizados, como `http://localhost:8000/*` durante la prueba. Restringe la clave del servidor a **Routes API** y a la IP de salida de Django cuando dispongas de una IP fija.
+3. Desde PowerShell, en la carpeta donde está `manage.py`, configura las variables y ejecuta:
+
+```powershell
+$env:GOOGLE_MAPS_BROWSER_KEY = "CLAVE_DEL_NAVEGADOR"
+$env:GOOGLE_MAPS_ROUTES_KEY = "CLAVE_DEL_SERVIDOR"
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py preparar_demo
+.\.venv\Scripts\python.exe manage.py runserver
+```
+
+Usa `GOOGLE_MAPS_MAP_ID` si tienes un ID de mapa de tipo JavaScript. Por defecto se usa `DEMO_MAP_ID` para pruebas. Mantén la clave del servidor en variables de entorno y fuera del repositorio. Si tu entorno virtual está activo, puedes ejecutar los mismos comandos con `python` o `py`.
+
+### Prueba con dos sesiones
+
+1. Abre `http://localhost:8000/` e inicia sesión como `profesional`. En **Agendamiento**, marca una visita confirmada **En camino** y pulsa **Compartir ubicación**. Concede el permiso de ubicación.
+2. Abre el mismo sitio en otro perfil de navegador o en una ventana privada. Inicia sesión como `paciente` y abre **Mi perfil → Seguimiento de mi visita**. Puedes simular una posición en las herramientas de desarrollo del navegador, por ejemplo latitud `-33.4489` y longitud `-70.6693`.
+3. Comprueba que el marcador se actualiza al cambiar la ubicación simulada y que el mapa deja de mostrarla al pulsar **Dejar de compartir** o al iniciar la atención.
+
+Las reservas ficticias apuntan a Plaza de Armas o Cerro Santa Lucía, en Santiago. Para usar otro destino en una visita, configura su latitud y longitud desde **Panel Django → Atenciones de demostración**. Una visita sin coordenadas de destino reconocidas puede mostrar la posición del profesional, con la estimación de llegada como no disponible.
+
+Para probar desde un teléfono, usa **HTTPS** y asegúrate de que ambas sesiones accedan al mismo servidor. Mantén la página del profesional abierta en primer plano. GoClinical deja de mostrar posiciones de más de 45 segundos. Solo guarda el último punto de cada visita activa, lo elimina al dejar de compartir o iniciar la atención y descarta puntos vencidos al consultar el seguimiento. El cálculo envía a Google las coordenadas de origen y destino. Usa las cuentas y destinos ficticios para esta demostración.
