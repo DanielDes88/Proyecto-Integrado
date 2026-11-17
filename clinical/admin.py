@@ -9,7 +9,7 @@ class ServiceAdmin(admin.ModelAdmin):
     list_filter = ("category",)
 @admin.register(Appointment)
 class AppointmentAdmin(admin.ModelAdmin):
-    list_display = ("id", "service", "date", "time", "status", "price", "workspace")
-    list_filter = ("status", "date")
-    readonly_fields = ("payment_key", "created_at")
+    list_display = ("id", "service", "date", "time", "status", "payment_status", "price", "workspace")
+    list_filter = ("status", "payment_status", "date")
+    readonly_fields = ("payment_key", "flow_order", "flow_token", "flow_url", "created_at")
 admin.site.register([UserProfile, DemoWorkspace, Applicant, Review, Availability])

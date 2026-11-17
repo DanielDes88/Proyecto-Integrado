@@ -18,7 +18,7 @@ def seed_workspace(w):
     if len(services) < 4: raise DemoError('Falta el catálogo. Ejecuta python manage.py seed_demo.', 503)
     today = timezone.localdate()
     for s, delta, hour, status in [(services[0],2,'10:00','Confirmada'),(services[3],-3,'11:30','Finalizada')]:
-        Appointment.objects.create(workspace=w, service=s, date=today+timedelta(days=delta), time=hour, status=status, address=ADDRESSES[0], price=s.price, duration=s.duration)
+        Appointment.objects.create(workspace=w, service=s, date=today+timedelta(days=delta), time=hour, status=status, address=ADDRESSES[0], price=s.price, duration=s.duration, paid=True, payment_status='paid')
     Applicant.objects.bulk_create([Applicant(workspace=w,name='Valentina Rojas',area='Enfermería',experience='5 años'), Applicant(workspace=w,name='Diego Muñoz',area='Kinesiología',experience='3 años')])
     Availability.objects.bulk_create([Availability(workspace=w,weekday='Lunes',start='09:00',end='13:00'), Availability(workspace=w,weekday='Miércoles',start='14:00',end='18:00')])
 
@@ -47,7 +47,7 @@ def serialize(w, user):
     if p.role == 'admin':
         accounts = [{'name': x.user.get_full_name(), 'email':x.user.email, 'role':x.get_role_display(), 'active':x.user.is_active} for x in UserProfile.objects.filter(workspace=w).select_related('user')]
     return {
-      'appointments': [{'id':a.code,'service':a.service_id,'date':a.date.isoformat(),'time':a.time.strftime('%H:%M'),'address':a.address,'status':a.status,'paid':a.paid,'price':a.price,'patient':a.patient.get_full_name() if a.patient else 'Sin asignar','professional':a.professional.get_full_name() if a.professional else 'Sin asignar'} for a in qs.select_related('patient','professional')],
+      'appointments': [{'id':a.code,'service':a.service_id,'date':a.date.isoformat(),'time':a.time.strftime('%H:%M'),'address':a.address,'status':a.status,'paid':a.paid,'payment_status':a.payment_status,'price':a.price,'patient':a.patient.get_full_name() if a.patient else 'Sin asignar','professional':a.professional.get_full_name() if a.professional else 'Sin asignar'} for a in qs.select_related('patient','professional')],
       'applicants': list(Applicant.objects.filter(workspace=w).values('id','name','area','experience','status')) if p.role=='admin' else [],
       'reviews': [{'id':x.pk,'appointment':x.appointment.code,'rating':x.rating,'comment':x.comment,'status':x.status} for x in reviews],
       'slots': [{'id':x.pk,'label':f'{x.weekday} · {x.start:%H:%M} a {x.end:%H:%M}'} for x in slots],
@@ -70,49 +70,60 @@ def integer(value):
     try: return int(value)
     except (ValueError,TypeError,OverflowError): raise DemoError('Valor numérico inválido.')
 
+
+@transaction.atomic
+def create_reservation(w, payload, user):
+    if profile(user).role != 'paciente': raise DemoError('Tu perfil no tiene permiso para reservar.',403)
+    w = DemoWorkspace.objects.select_for_update().get(pk=w.pk)
+    try: key = uuid.UUID(str(payload.get('payment_key')))
+    except (ValueError,TypeError): raise DemoError('Identificador de pago inválido.')
+    old = Appointment.objects.filter(workspace=w, patient=user, payment_key=key).first()
+    if old:
+        if old.status == 'Cancelada': raise DemoError('Esta reserva ya fue cancelada.',409)
+        return old
+    if payload.get('accepted') is not True: raise DemoError('Debes aceptar las condiciones antes de continuar.')
+    s = Service.objects.filter(pk=integer(payload.get('service'))).first()
+    if not s: raise DemoError('Servicio no disponible.')
+    try: day = date.fromisoformat(str(payload.get('date')))
+    except ValueError: raise DemoError('Fecha inválida.')
+    if day <= timezone.localdate(): raise DemoError('Elige una fecha desde mañana.')
+    if day > timezone.localdate()+timedelta(days=365): raise DemoError('Selecciona una fecha dentro del próximo año.')
+    hour = payload.get('time')
+    address = payload.get('address')
+    if hour not in TIMES or address not in ADDRESSES: raise DemoError('Horario o dirección de ejemplo inválidos.')
+    start = datetime.combine(day,time.fromisoformat(hour)); end = start+timedelta(minutes=s.duration)
+    for existing in Appointment.objects.filter(workspace=w,date=day).exclude(status='Cancelada'):
+        other = datetime.combine(day,existing.time)
+        if start < other+timedelta(minutes=existing.duration) and end > other:
+            raise DemoError('El horario se superpone con otra visita. Selecciona otro.',409)
+    professional = UserProfile.objects.filter(workspace=w,role='profesional',user__is_active=True).select_related('user').first()
+    if not professional: raise DemoError('No hay un profesional disponible.',409)
+    return Appointment.objects.create(
+        workspace=w,patient=user,professional=professional.user,service=s,date=day,time=hour,
+        address=address,price=s.price,duration=s.duration,payment_key=key,
+        conditions_accepted=True,paid=False,payment_status='pending',
+    )
+
+
 @transaction.atomic
 def act(w, payload, user):
     role = profile(user).role
     action = payload.get('action')
     actions = {
-        'paciente': {'reserve','cancel','review'},
+        'paciente': {'cancel','review'},
         'profesional': {'advance','slot_add','slot_remove','bill'},
         'admin': {'approve','reject','review_approve'},
     }
     if action not in actions.get(role,set()): raise DemoError('Tu perfil no tiene permiso para esta acción.',403)
     w = DemoWorkspace.objects.select_for_update().get(pk=w.pk)
     result = {}
-    if action == 'reserve':
-        try: key = uuid.UUID(str(payload.get('payment_key')))
-        except (ValueError,TypeError): raise DemoError('Identificador de pago simulado inválido.')
-        old = Appointment.objects.filter(workspace=w, patient=user, payment_key=key).first()
-        if old: return {'state':serialize(w,user), 'appointment_id':old.code}
-        if payload.get('accepted') is not True: raise DemoError('Debes aceptar las condiciones de demostración.')
-        s = Service.objects.filter(pk=integer(payload.get('service'))).first()
-        if not s: raise DemoError('Servicio no disponible.')
-        try: day = date.fromisoformat(str(payload.get('date')))
-        except ValueError: raise DemoError('Fecha inválida.')
-        if day <= timezone.localdate(): raise DemoError('Elige una fecha desde mañana.')
-        if day > timezone.localdate()+timedelta(days=365): raise DemoError('Selecciona una fecha dentro del próximo año.')
-        hour = payload.get('time')
-        address = payload.get('address')
-        if hour not in TIMES or address not in ADDRESSES: raise DemoError('Horario o dirección de ejemplo inválidos.')
-        start = datetime.combine(day,time.fromisoformat(hour)); end = start+timedelta(minutes=s.duration)
-        for existing in Appointment.objects.filter(workspace=w,date=day).exclude(status='Cancelada'):
-            other = datetime.combine(day,existing.time)
-            if start < other+timedelta(minutes=existing.duration) and end > other:
-                raise DemoError('El horario se superpone con otra visita. Selecciona otro.',409)
-        professional = UserProfile.objects.filter(workspace=w,role='profesional',user__is_active=True).select_related('user').first()
-        if not professional: raise DemoError('No hay un profesional de demostración disponible.',409)
-        # El precio se toma del catálogo, nunca de un total enviado por el navegador.
-        a = Appointment.objects.create(workspace=w,patient=user,professional=professional.user,service=s,date=day,time=hour,address=address,price=s.price,duration=s.duration,payment_key=key,conditions_accepted=True)
-        result['appointment_id'] = a.code
-    elif action in ['cancel','advance']:
+    if action in ['cancel','advance']:
         a = appointment(w,payload.get('id'),user)
         if action == 'cancel':
             if a.status != 'Confirmada': raise DemoError('Solo se puede cancelar una visita confirmada.',409)
             a.status = 'Cancelada'
         else:
+            if not a.paid: raise DemoError('La atención requiere un pago confirmado.',409)
             transitions = {'Confirmada':'En camino','En camino':'En atención','En atención':'Finalizada'}
             if a.status not in transitions: raise DemoError('La atención no admite otro avance.',409)
             # Evita que un reintento con una vista antigua avance dos estados.
