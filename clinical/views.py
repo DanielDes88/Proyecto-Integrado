@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from django.conf import settings
 from django.http import JsonResponse, HttpResponse
 from django.shortcuts import render, redirect
 from django.contrib.auth import login, logout
@@ -33,7 +34,7 @@ def portal(request, role):
         p = profile(request.user)
         if role != p.role: return HttpResponse('No tienes permiso para acceder a este portal.', status=403)
         w = workspace(request)
-        return render(request, 'clinical/index.html', {'bootstrap': {'services':catalog(), 'state':serialize(w, request.user), 'user': {'role':p.role, 'name':request.user.get_full_name(), 'email':request.user.email, 'username':request.user.username, 'is_staff':request.user.is_staff}}})
+        return render(request, 'clinical/index.html', {'bootstrap': {'maps': {'key': settings.GOOGLE_MAPS_BROWSER_KEY, 'mapId': settings.GOOGLE_MAPS_MAP_ID} if p.role == 'paciente' else {}, 'services':catalog(), 'state':serialize(w, request.user), 'user': {'role':p.role, 'name':request.user.get_full_name(), 'email':request.user.email, 'username':request.user.username, 'is_staff':request.user.is_staff}}})
     except DemoError as e:
         return HttpResponse(e.message, status=e.status, content_type='text/plain; charset=utf-8')
 
