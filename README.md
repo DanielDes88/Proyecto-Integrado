@@ -112,6 +112,8 @@ Abre http://127.0.0.1:8000/admin/ con la cuenta que acabas de crear. Allí se pu
 | `clinical/static/clinical/app.js` | Menús y vistas específicas de cada perfil, formularios y calendarios |
 | `clinical/static/clinical/tracking.js` | Compartición de ubicación y mapa del paciente |
 | `clinical/static/clinical/tracking.css` | Estilos del estado de ubicación y el mapa |
+| `clinical/locustfile.py` | Carga HTTP local de sesiones autenticadas |
+| `config/loadtest_settings.py` | Base SQLite aislada para la prueba de carga |
 | `clinical/static/clinical/roles.css` | Paleta GoClinical, login y adaptación por tamaño de pantalla |
 | `clinical/static/clinical/style.css` | Estilos base y componentes reutilizables |
 | `clinical/management/commands/preparar_demo.py` | Cuentas y registros de demostración |
@@ -340,6 +342,36 @@ Remove-Item Env:RUN_ATLAS_INTEGRATION_TESTS
 ```
 
 La prueba usa una base de datos relacional temporal y solo escribe un documento ficticio en `goclinical_dev`; al terminar, borra de Atlas el documento que creó. Si falla la limpieza, revisa y elimina manualmente únicamente el documento de prueba de esa base. No ejecutes esta prueba contra una base de producción.
+
+#### Prueba de carga local de sesiones con Locust
+
+Esta prueba simula sesiones HTTP autenticadas, visitas al portal y consultas de solo lectura a estado, documentos y seguimiento. No ejecuta JavaScript ni clics reales en el navegador; esas secciones cambian localmente en la aplicación. La prueba está restringida a `localhost` y no inicia pagos ni llama a Google Maps o MongoDB.
+
+Instala Locust junto con las demás herramientas de prueba:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
+```
+
+En una primera terminal, prepara una base SQLite temporal y deja el servidor ejecutándose:
+
+```powershell
+$loadTestDb = Join-Path $env:TEMP ("goclinical-locust-" + [guid]::NewGuid().ToString("N") + ".sqlite3")
+$env:LOAD_TEST_DATABASE = $loadTestDb
+.\.venv\Scripts\python.exe manage.py migrate --settings=config.loadtest_settings --noinput
+.\.venv\Scripts\python.exe manage.py preparar_demo --settings=config.loadtest_settings
+.\.venv\Scripts\python.exe manage.py runserver 127.0.0.1:8000 --settings=config.loadtest_settings --noreload
+```
+
+En una segunda terminal, ejecuta 500 usuarios, incorporando 10 por segundo durante una prueba de dos minutos:
+
+```powershell
+$env:LOCUST_USERNAME = "paciente"
+$env:LOCUST_PASSWORD = "GoClinical2026!"
+.\.venv\Scripts\locust.exe -f clinical\locustfile.py --headless --host http://127.0.0.1:8000 --users 500 --spawn-rate 10 --run-time 2m --csv (Join-Path $env:TEMP "goclinical-locust-results")
+```
+
+El resumen de Locust muestra solicitudes por segundo, latencias y errores; también guarda CSV temporales bajo `%TEMP%`. Al terminar, detén el servidor con Ctrl+C. La base temporal se puede eliminar desde la primera terminal con `Remove-Item $loadTestDb`. No ejecutes esta prueba contra producción ni contra un servidor que no controles.
 
 La reserva utiliza horarios fijos y rechaza solapamientos entre visitas del espacio de demostración; no calcula disponibilidad a partir de los bloques del profesional. El primer profesional activo del espacio se asigna automáticamente. El alcance está pensado para las tres cuentas iniciales y una presentación local, no para un marketplace con asignación concurrente real.
 
