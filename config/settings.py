@@ -20,6 +20,10 @@ DATABASES = {"default": dj_database_url.parse(DATABASE_URL, conn_max_age=DATABAS
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 MONGODB_DATABASE = os.environ.get("MONGODB_DATABASE", "goclinical")
 MONGODB_TLS = os.environ.get("MONGODB_TLS", "1").lower() in {"1", "true", "yes"}
+FLOW_API_KEY = os.environ.get("FLOW_API_KEY", "")
+FLOW_SECRET_KEY = os.environ.get("FLOW_SECRET_KEY", "")
+FLOW_API_URL = os.environ.get("FLOW_API_URL", "https://sandbox.flow.cl/api")
+FLOW_SITE_URL = os.environ.get("FLOW_SITE_URL", "").rstrip("/")
 AUTH_PASSWORD_VALIDATORS = [
  {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
  {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},

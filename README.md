@@ -1,6 +1,6 @@
 # GoClinical Django — portales por usuario
 
-Prototipo académico en Django y SQLite con inicio de sesión y vistas específicas para **paciente, profesional y administrador**, inspirado en los tres mockups de GoClinical adjuntos al proyecto. Los pagos y documentos son simulados.
+Prototipo académico en Django y SQLite con inicio de sesión y vistas específicas para **paciente, profesional y administrador**, inspirado en los tres mockups de GoClinical adjuntos al proyecto. Los pagos se procesan con Flow en sandbox; los documentos son de demostración.
 
 ## Ejecutar en Windows
 
@@ -41,7 +41,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 
 - Inicio con servicios y calendario de próximas visitas.
 - Catálogo con búsqueda y filtro por categoría.
-- Reservar, simular pago aprobado/rechazado y consultar detalle.
+- Reservar, pagar en Flow sandbox y consultar el estado confirmado del pago.
 - Cancelar visitas confirmadas.
 - Evaluar una atención finalizada; el comentario queda pendiente de moderación.
 - Ver perfil ficticio, historial de pagos y ayuda.
@@ -66,7 +66,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 ## Recorrido de presentación
 
 1. Ingresa como `paciente` y agenda una atención desde Servicios.
-2. Selecciona Pago aprobado; verifica la reserva en Mis solicitudes.
+2. Continúa a Flow sandbox para completar una transacción de prueba; verifica el resultado en Mis solicitudes.
 3. Cierra sesión e ingresa como `profesional`.
 4. En Agendamiento, avanza la atención hasta Finalizada.
 5. Vuelve al paciente y evalúa la visita desde Historial.
@@ -264,7 +264,7 @@ Se aplican sesiones Django, contraseñas con hash del framework, CSRF, consultas
 
 La reserva utiliza horarios fijos y rechaza solapamientos entre visitas del espacio de demostración; no calcula disponibilidad a partir de los bloques del profesional. El primer profesional activo del espacio se asigna automáticamente. El alcance está pensado para las tres cuentas iniciales y una presentación local, no para un marketplace con asignación concurrente real.
 
-Los pagos son simulados. Aunque el prototipo permite cargar archivos, no se deben subir documentos clínicos reales: faltan análisis antimalware, políticas de retención y una revisión completa de seguridad, privacidad y requisitos legales. SQLite, DEBUG de desarrollo y las credenciales de ejemplo no son una configuración de producción.
+Los pagos usan Flow sandbox; no configures credenciales de producción en esta demostración. Aunque el prototipo permite cargar archivos, no se deben subir documentos clínicos reales: faltan análisis antimalware, políticas de retención y una revisión completa de seguridad, privacidad y requisitos legales. SQLite, DEBUG de desarrollo y las credenciales de ejemplo no son una configuración de producción.
 
 Si actualizas sobre una copia anterior: respalda `db.sqlite3`, ejecuta `migrate` y `preparar_demo`. Los registros anónimos de la versión anterior se conservan en su espacio original; no se asignan automáticamente a las cuentas nuevas. La opción recomendada para esta entrega es extraer en carpeta nueva.
 
@@ -283,5 +283,45 @@ Referencias técnicas: documentación oficial de Django 5.2 sobre autenticación
 ## Página pública
 
 La ruta `/` muestra la presentación pública de GoClinical, el catálogo de servicios, cómo funciona y preguntas frecuentes. No requiere una cuenta. El botón Iniciar sesión lleva al acceso existente; con sesión iniciada aparece Ir a mi portal. Los portales incluyen Ver sitio público y cerrar sesión devuelve a la página pública. El catálogo comparte los servicios de SQLite; no se exponen citas, pacientes ni otros datos privados. No se incorporó registro público.
+
+## Pagos con Flow (sandbox)
+
+El checkout usa la API REST oficial de Flow y queda configurado por defecto en `https://sandbox.flow.cl/api`. No cambies la URL a producción durante las pruebas. Configura las credenciales privadas de sandbox en la misma terminal desde la que ejecutarás Django:
+
+```powershell
+$env:FLOW_API_KEY = "tu-api-key-de-sandbox"
+$env:FLOW_SECRET_KEY = "tu-secret-key-de-sandbox"
+$env:FLOW_SITE_URL = "https://tu-dominio-publico"
+```
+
+`FLOW_SITE_URL` debe ser HTTPS y accesible públicamente para que Flow pueda llamar a `/api/payments/flow/confirmation/` y volver por `/payments/flow/return/`. En desarrollo local, usa un túnel HTTPS temporal. No publiques ni compartas `FLOW_SECRET_KEY`; no se almacena en la base de datos. `FLOW_API_URL` puede omitirse porque usa sandbox por defecto.
+
+El servidor firma cada solicitud con HMAC-SHA256. La reserva queda pendiente hasta que el servidor consulta `payment/getStatus` a Flow y valida el token, el folio del comercio y el monto. El retorno del navegador no se considera prueba de pago. Si no se configuran credenciales o una URL HTTPS pública, el checkout devuelve un error explícito y no simula un pago. Consulta la [documentación oficial de Flow](https://www.flow.cl/docs/api.html).
+
+### Requisitos y puesta en producción
+
+La integración del repositorio queda en **sandbox**. No basta con cambiar la URL para considerarla lista para producción: antes de recibir pagos reales, completa y verifica todo lo siguiente:
+
+1. **Habilita el comercio en Flow.** Completa la contratación/verificación de la cuenta y habilita los medios de pago que se ofrecerán. Solicita a Flow las credenciales de producción (`APIKey` y `SecretKey`) desde el canal seguro de tu cuenta. Las credenciales de sandbox y producción son distintas.
+2. **Despliega GoClinical en un servidor público.** Usa un dominio propio con certificado TLS válido. Flow debe poder acceder por HTTPS, sin VPN ni autenticación HTTP, a `/api/payments/flow/confirmation/` y `/payments/flow/return/`. No sirven `localhost`, una IP privada ni un túnel temporal para producción.
+3. **Configura secretos como variables del entorno de despliegue.** No los subas al repositorio, README, JavaScript, base de datos ni logs. En el entorno de producción establece:
+
+   ```text
+   FLOW_API_KEY=<APIKey de producción>
+   FLOW_SECRET_KEY=<SecretKey de producción>
+   FLOW_API_URL=https://www.flow.cl/api
+   FLOW_SITE_URL=https://<dominio-publico>
+   DJANGO_DEBUG=0
+   DJANGO_SECRET_KEY=<secreto aleatorio nuevo y privado>
+   DJANGO_ALLOWED_HOSTS=<dominio-publico>
+   DATABASE_URL=<conexión PostgreSQL de producción con SSL>
+   ```
+
+   `FLOW_SITE_URL` es el origen HTTPS sin barra final. No reutilices la clave Django de desarrollo, las credenciales públicas de demostración ni credenciales compartidas por chat. Limita quién puede leer los secretos y planifica su rotación.
+4. **Prepara la aplicación y la base de datos.** Usa PostgreSQL y un servidor WSGI/ASGI de producción; no expongas `runserver` ni SQLite como servicio de producción. Respalda la base y ejecuta `manage.py migrate` en el despliegue antes de servir tráfico. Configura archivos estáticos, HTTPS, hosts permitidos, cookies seguras y monitoreo de errores conforme al proveedor.
+5. **Ejecuta la lista de pruebas de aceptación en sandbox antes de activar producción.** Verifica pago aprobado, rechazado, cancelado y pendiente; reintentos; callbacks duplicados; monto/folio no coincidentes; timeout y recuperación. Confirma los estados tanto en Flow como en GoClinical. Las pruebas automatizadas se ejecutan con `manage.py test clinical`; no reemplazan las pruebas de punta a punta con credenciales sandbox.
+6. **Activa el endpoint productivo solo con aprobación.** Cambia `FLOW_API_URL` a `https://www.flow.cl/api` y carga exclusivamente credenciales productivas en el gestor de secretos del despliegue. Haz una compra real de bajo monto acordada con el comercio y verifica la liquidación en Flow. Vigila errores de callbacks y diferencias de conciliación después del lanzamiento.
+
+El callback de confirmación está exento de CSRF porque lo llama Flow, pero no confía en el token recibido: consulta el estado en la API con la clave secreta y valida token, folio y monto antes de marcar `paid`. Mantén este flujo servidor-a-servidor y no aceptes confirmaciones desde el navegador. Esta versión no implementa reembolsos automáticos, conciliación contable, notificaciones al paciente ni reintentos de callback administrados; cancela una atención pagada no devuelve el dinero automáticamente. Define esos procesos operacionales y legales antes de vender servicios reales. Realiza además una revisión de seguridad, privacidad y cumplimiento aplicable al tratamiento de datos de salud en Chile; esta demostración académica no está certificada para datos clínicos reales.
 
 Archivos: `clinical/templates/clinical/public.html` y `clinical/static/clinical/public.css`.

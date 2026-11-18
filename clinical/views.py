@@ -6,13 +6,15 @@ from django.shortcuts import render, redirect
 from django.contrib.auth import login, logout
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.cache import cache
-from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 from django.views.decorators.cache import never_cache
 from django.db import IntegrityError, OperationalError
+from django.urls import reverse
 from django.utils.text import get_valid_filename
-from .demo import workspace, serialize, catalog, act, DemoError, profile
+from .demo import workspace, serialize, catalog, act, create_reservation, DemoError, profile
 from .document_store import delete_document, read_document, save_document
+from .flow import FlowError, confirm_payment, create_payment, validate_configuration
 from .models import Appointment, ClinicalDocument
 logger = logging.getLogger(__name__)
 MAX_DOCUMENT_SIZE = 10 * 1024 * 1024
@@ -143,6 +145,77 @@ def action_view(request):
     except OperationalError:
         logger.exception('Fallo de base de datos en la demostración')
         return JsonResponse({'error':'No se pudo guardar. Intenta nuevamente en unos segundos.'},status=503)
+
+
+@never_cache
+@require_POST
+def flow_checkout_view(request):
+    if request.content_type != 'application/json': return JsonResponse({'error':'Se requiere JSON.'},status=415)
+    if len(request.body) > 8192: return JsonResponse({'error':'Petición demasiado extensa.'},status=413)
+    try:
+        data = json.loads(request.body)
+        if not isinstance(data,dict): raise ValueError()
+    except (ValueError,UnicodeDecodeError): return JsonResponse({'error':'JSON inválido.'},status=400)
+    try:
+        p = profile(request.user)
+        if p.role != 'paciente': raise DemoError('Solo un paciente puede iniciar un pago.',403)
+        validate_configuration()
+        if not request.user.email: raise DemoError('Tu cuenta necesita un correo antes de iniciar el pago.')
+        appointment = create_reservation(p.workspace,data,request.user)
+        if appointment.paid:
+            return JsonResponse({'paid':True,'appointment_id':appointment.code})
+        if appointment.payment_status != 'pending':
+            return JsonResponse({'error':'Esta reserva ya no admite pagos. Crea una nueva reserva.'},status=409)
+        if appointment.flow_token and appointment.flow_url:
+            return JsonResponse({'redirect_url':appointment.flow_url,'appointment_id':appointment.code})
+        payment = create_payment(appointment)
+        appointment.flow_token = payment['token']
+        appointment.flow_order = str(payment.get('flowOrder',''))[:30]
+        appointment.flow_url = payment['payment_url']
+        appointment.save(update_fields=['flow_token','flow_order','flow_url'])
+        return JsonResponse({'redirect_url':appointment.flow_url,'appointment_id':appointment.code})
+    except DemoError as e:
+        return JsonResponse({'error':e.message},status=e.status)
+    except FlowError as e:
+        logger.exception('No se pudo iniciar el pago en Flow')
+        return JsonResponse({'error':str(e)},status=503)
+    except IntegrityError:
+        return JsonResponse({'error':'El horario acaba de ser reservado. Selecciona otro.'},status=409)
+    except OperationalError:
+        logger.exception('Fallo de base de datos al iniciar el pago')
+        return JsonResponse({'error':'No se pudo guardar la reserva. Intenta nuevamente.'},status=503)
+
+
+@csrf_exempt
+@never_cache
+@require_POST
+def flow_confirmation_view(request):
+    token = request.POST.get('token','')
+    if not token: return HttpResponse('Falta el token de Flow.',status=400)
+    try:
+        appointment = confirm_payment(token)
+    except FlowError:
+        logger.exception('No se pudo confirmar el pago notificado por Flow')
+        return HttpResponse('No se pudo confirmar el pago.',status=503)
+    if not appointment: return HttpResponse('Orden de pago no encontrada.',status=404)
+    return HttpResponse('OK')
+
+
+@never_cache
+@require_GET
+def flow_return_view(request):
+    result = 'error'
+    token = request.GET.get('token','')
+    if token:
+        try:
+            appointment = confirm_payment(token)
+        except FlowError:
+            logger.exception('No se pudo verificar el pago al volver desde Flow')
+        else:
+            if appointment:
+                result = appointment.payment_status
+    return redirect(f"{reverse('portal',kwargs={'role':'paciente'})}?flow_payment={result}#paciente")
+
 
 def csrf_failure(request, reason=''):
     if request.path.startswith('/api/'):

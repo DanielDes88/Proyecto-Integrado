@@ -37,7 +37,16 @@ class Appointment(models.Model):
     price = models.PositiveIntegerField("precio histórico CLP")
     duration = models.PositiveIntegerField("duración histórica en minutos")
     payment_key = models.UUIDField(default=uuid.uuid4)
-    paid = models.BooleanField("pago simulado aprobado", default=True)
+    paid = models.BooleanField("pago confirmado", default=False)
+    payment_status = models.CharField(
+        "estado del pago",
+        max_length=12,
+        choices=[(x, x) for x in ["pending", "paid", "rejected", "cancelled"]],
+        default="pending",
+    )
+    flow_order = models.CharField(max_length=30, blank=True, default="")
+    flow_token = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    flow_url = models.URLField(max_length=500, blank=True, default="")
     conditions_accepted = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
