@@ -397,15 +397,11 @@ La ruta `/` muestra la presentación pública de GoClinical, el catálogo de ser
 
 ## Pagos con Flow (sandbox)
 
-El checkout usa la API REST oficial de Flow y queda configurado por defecto en `https://sandbox.flow.cl/api`. No cambies la URL a producción durante las pruebas. Configura las credenciales privadas de sandbox en la misma terminal desde la que ejecutarás Django:
+El checkout usa la API REST oficial de Flow y queda configurado por defecto en `https://sandbox.flow.cl/api`. No cambies la URL a producción durante las pruebas. Para desarrollo local, abre `.env` y completa `FLOW_API_KEY` y `FLOW_SECRET_KEY` con las credenciales de sandbox obtenidas en https://sandbox.flow.cl/app/web/misDatos.php. Django carga ese archivo al iniciar. `.env` está excluido de Git; no copies tus claves a `.env.example` ni las compartas.
 
-```powershell
-$env:FLOW_API_KEY = "tu-api-key-de-sandbox"
-$env:FLOW_SECRET_KEY = "tu-secret-key-de-sandbox"
-$env:FLOW_SITE_URL = "https://tu-dominio-publico"
-```
+Establece también `FLOW_SITE_URL` en `.env` con el origen HTTPS público que usarás para pruebas, sin barra final. Flow necesita llamar a los callbacks; `localhost` no es accesible desde Flow. En desarrollo local, inicia un túnel HTTPS temporal y usa su URL. Conserva `FLOW_API_URL=https://sandbox.flow.cl/api`.
 
-`FLOW_SITE_URL` debe ser HTTPS y accesible públicamente para que Flow pueda llamar a `/api/payments/flow/confirmation/` y volver por `/payments/flow/return/`. En desarrollo local, usa un túnel HTTPS temporal. No publiques ni compartas `FLOW_SECRET_KEY`; no se almacena en la base de datos. `FLOW_API_URL` puede omitirse porque usa sandbox por defecto.
+No publiques ni compartas `FLOW_SECRET_KEY`; no se almacena en la base de datos. `.env.example` muestra las variables requeridas sin credenciales.
 
 El servidor firma cada solicitud con HMAC-SHA256. La reserva queda pendiente hasta que el servidor consulta `payment/getStatus` a Flow y valida el token, el folio del comercio y el monto. El retorno del navegador no se considera prueba de pago. Si no se configuran credenciales o una URL HTTPS pública, el checkout devuelve un error explícito y no simula un pago. Consulta la [documentación oficial de Flow](https://www.flow.cl/docs/api.html).
 
