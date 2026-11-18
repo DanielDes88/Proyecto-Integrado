@@ -1,9 +1,12 @@
 """Permisos por rol, acceso a objetos y recorridos del prototipo."""
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from ssl import SSLError
+from threading import Barrier
 from unittest.mock import patch
-from django.test import TestCase, Client, override_settings
+from django.test import TestCase, Client, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.cache import cache
@@ -161,6 +164,19 @@ class RoleTests(TestCase):
             return client.post(url, {**data, **changes}, content_type='application/json',
                                HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
 
+        visit.paid = False
+        visit.payment_status = 'pending'
+        visit.save(update_fields=['paid', 'payment_status'])
+        self.assertEqual(self.post('advance', role='profesional', id=visit.code,
+                                   expected_status='Confirmada').status_code, 409)
+        visit.refresh_from_db()
+        self.assertEqual(visit.status, 'Confirmada')
+        self.assertEqual(send(pro).status_code, 409)
+        self.assertFalse(TripLocation.objects.filter(appointment=visit).exists())
+        visit.paid = True
+        visit.payment_status = 'paid'
+        visit.save(update_fields=['paid', 'payment_status'])
+
         self.assertEqual(send(pro).status_code, 409)
         self.assertEqual(self.post('advance', role='profesional', id=visit.code,
                                    expected_status='Confirmada').status_code, 200)
@@ -200,6 +216,34 @@ class RoleTests(TestCase):
         self.assertFalse(TripLocation.objects.filter(appointment=visit).exists())
         self.assertEqual(send(pro).status_code, 409)
 
+    def test_advancement_updates_only_selected_appointment(self):
+        appointments=self.state('profesional')['appointments']
+        target=next(a for a in appointments if a['status']=='Confirmada')
+        other_statuses={a['id']:a['status'] for a in appointments if a['id']!=target['id']}
+        transitions=[('Confirmada','En camino'),('En camino','En atención'),('En atención','Finalizada')]
+
+        for expected_status,next_status in transitions:
+            response=self.post('advance',role='profesional',id=target['id'],expected_status=expected_status)
+            self.assertEqual(response.status_code,200)
+            statuses={a['id']:a['status'] for a in response.json()['state']['appointments']}
+            self.assertEqual(statuses[target['id']],next_status)
+            for appointment_id,status in other_statuses.items():
+                self.assertEqual(statuses[appointment_id],status)
+
+            if expected_status=='Confirmada':
+                stale_response=self.post('advance',role='profesional',id=target['id'],expected_status='Confirmada')
+                self.assertEqual(stale_response.status_code,409)
+                statuses={a['id']:a['status'] for a in self.state('profesional')['appointments']}
+                self.assertEqual(statuses[target['id']],next_status)
+                for appointment_id,status in other_statuses.items():
+                    self.assertEqual(statuses[appointment_id],status)
+
+        response=self.post('advance',role='profesional',id=target['id'],expected_status='Finalizada')
+        self.assertEqual(response.status_code,409)
+        statuses={a['id']:a['status'] for a in self.state('profesional')['appointments']}
+        self.assertEqual(statuses[target['id']],'Finalizada')
+        for appointment_id,status in other_statuses.items():
+            self.assertEqual(statuses[appointment_id],status)
     def test_cancellation(self):
         a=next(a for a in self.state()['appointments'] if a['status']=='Confirmada')
         self.assertEqual(self.post('cancel',id=a['id']).status_code,200)
@@ -262,7 +306,102 @@ class RoleTests(TestCase):
         },HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
         self.assertEqual(unsupported.status_code,400)
         self.assertEqual(ClinicalDocument.objects.count(),0)
+    def test_document_upload_accepts_supported_signatures(self):
+        appointment=Appointment.objects.filter(patient__username='paciente').first()
+        files=[
+            ('documento.pdf',b'%PDF-1.7\nprueba','application/pdf','application/pdf','000000000000000000000001'),
+            ('documento.png',b'\x89PNG\r\n\x1a\nprueba','image/png','image/png','000000000000000000000002'),
+            ('documento.jpg',b'\xff\xd8\xffprueba','image/jpeg','image/jpeg','000000000000000000000003'),
+        ]
+        client=self.clients['paciente']
+        for name,content,upload_type,expected_type,mongo_id in files:
+            with self.subTest(name=name), patch('clinical.views.save_document',return_value=mongo_id) as save:
+                response=client.post('/api/documents/upload/',{
+                    'file':SimpleUploadedFile(name,content,content_type=upload_type),
+                    'category':'Otro','appointment':appointment.code,
+                },HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+                self.assertEqual(response.status_code,200)
+                save.assert_called_once_with(content,expected_type)
+                self.assertEqual(ClinicalDocument.objects.get(mongo_id=mongo_id).content_type,expected_type)
+    def test_document_upload_enforces_10_mib_limit(self):
+        appointment=Appointment.objects.filter(patient__username='paciente').first()
+        client=self.clients['paciente']
+        max_size=10*1024*1024
+        prefix=b'%PDF-1.7\n'
+        with patch('clinical.views.save_document') as save:
+            oversized=client.post('/api/documents/upload/',{
+                'file':SimpleUploadedFile('demasiado-grande.pdf',prefix+b'x'*max_size,content_type='application/pdf'),
+                'category':'Otro','appointment':appointment.code,
+            },HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+            self.assertEqual(oversized.status_code,413)
+            save.assert_not_called()
+
+        accepted_content=prefix+b'x'*(max_size-len(prefix))
+        with patch('clinical.views.save_document',return_value='000000000000000000000010') as save:
+            accepted=client.post('/api/documents/upload/',{
+                'file':SimpleUploadedFile('limite.pdf',accepted_content,content_type='application/pdf'),
+                'category':'Otro','appointment':appointment.code,
+            },HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        save.assert_called_once_with(accepted_content,'application/pdf')
+        self.assertEqual(accepted.status_code,200)
+        self.assertEqual(ClinicalDocument.objects.get().size,max_size)
+    def test_document_upload_handles_tls_failure(self):
+        appointment=Appointment.objects.filter(patient__username='paciente').first()
+        client=self.clients['paciente']
+        with self.assertLogs('clinical.views',level='ERROR'):
+            with patch('clinical.views.save_document',side_effect=SSLError('TLS handshake failed')) as save:
+                response=client.post('/api/documents/upload/',{
+                    'file':SimpleUploadedFile('prueba.pdf',b'%PDF-1.7\nprueba',content_type='application/pdf'),
+                    'category':'Otro','appointment':appointment.code,
+                },HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        self.assertEqual(response.status_code,503)
+        self.assertIn('Revisa la conexión con MongoDB',response.json()['error'])
+        save.assert_called_once()
+        self.assertEqual(ClinicalDocument.objects.count(),0)
     def test_seed_repeat_does_not_reset_password(self):
         user=get_user_model().objects.get(username='paciente');user.set_password('OtraClave123!');user.save()
         count=Appointment.objects.count();call_command('preparar_demo',verbosity=0)
         user.refresh_from_db();self.assertTrue(user.check_password('OtraClave123!'));self.assertEqual(Appointment.objects.count(),count)
+
+
+class LoginThrottleConcurrencyDiagnosticTests(TransactionTestCase):
+    """Reproduces the current non-atomic login throttle race with local requests."""
+
+    def setUp(self):
+        cache.clear()
+        get_user_model().objects.create_user(
+            username='concurrent-login-test',
+            password='CorrectTestPassword123!',
+        )
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+    def test_simultaneous_failures_can_exceed_the_throttle_limit(self):
+        attempts=11
+        remote_addr='192.0.2.42'
+        rate_limit_key='gc-login-'+remote_addr
+        barrier=Barrier(attempts)
+        original_get=cache.get
+
+        def read_same_count_then_wait(key,*args,**kwargs):
+            value=original_get(key,*args,**kwargs)
+            if key==rate_limit_key:
+                barrier.wait(timeout=15)
+            return value
+
+        def submit_failed_login(_):
+            return Client().post(
+                '/login/',
+                {'username':'concurrent-login-test','password':'wrong-password'},
+                REMOTE_ADDR=remote_addr,
+            )
+
+        with patch('clinical.views.cache.get',side_effect=read_same_count_then_wait):
+            with ThreadPoolExecutor(max_workers=attempts) as pool:
+                responses=list(pool.map(submit_failed_login,range(attempts)))
+
+        throttled=sum('Demasiados intentos' in response.content.decode() for response in responses)
+        self.assertEqual(throttled,0)
+        self.assertEqual(cache.get(rate_limit_key),1)

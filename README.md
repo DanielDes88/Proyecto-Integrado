@@ -111,11 +111,13 @@ Abre http://127.0.0.1:8000/admin/ con la cuenta que acabas de crear. Allí se pu
 | `clinical/templates/clinical/index.html` | Estructura común del portal |
 | `clinical/static/clinical/app.js` | Menús y vistas específicas de cada perfil, formularios y calendarios |
 | `clinical/static/clinical/tracking.js` | Compartición de ubicación y mapa del paciente |
+| `clinical/static/clinical/tracking.css` | Estilos del estado de ubicación y el mapa |
 | `clinical/static/clinical/roles.css` | Paleta GoClinical, login y adaptación por tamaño de pantalla |
 | `clinical/static/clinical/style.css` | Estilos base y componentes reutilizables |
 | `clinical/management/commands/preparar_demo.py` | Cuentas y registros de demostración |
 | `clinical/migrations/` | Migraciones de Flow, Maps y unión de ambas ramas |
 | `clinical/tests.py` | Pruebas de acceso, pagos, seguimiento y operaciones |
+| `clinical/atlas_tests.py` | Prueba de integración opcional de carga y descarga en MongoDB Atlas |
 
 ## Bases de datos y documentos
 
@@ -250,6 +252,32 @@ Las variables `$env:MONGODB_*` duran mientras permanezca abierta esa terminal. S
 
 MongoDB Atlas almacena los bytes de los documentos en `goclinical.clinical_documents`. Los usuarios, citas, permisos y metadata permanecen en la base relacional configurada por Django. Con SQLite local, cada integrante tendrá sus propios usuarios y citas de demostración aunque todos utilicen el mismo MongoDB; para compartir también esos datos se necesita una base relacional común, como PostgreSQL.
 
+### Conectar MongoDB Atlas para desarrollo
+
+1. En Atlas, crea un clúster de desarrollo, un usuario de base de datos con permisos de lectura y escritura, y agrega la IP actual del equipo en **Network Access**. No habilites acceso desde cualquier IP (`0.0.0.0/0`).
+2. En **Connect → Drivers**, copia la URI de conexión y reemplaza los marcadores por el usuario y la contraseña de base de datos de Atlas. Si contienen caracteres especiales, codifícalos para URL.
+3. En PowerShell, define las variables en la misma terminal desde la que ejecutarás Django. Usa una base separada para desarrollo:
+
+	```powershell
+	$env:MONGODB_URI = 'mongodb+srv://USUARIO:CLAVE@TU_CLUSTER.mongodb.net/?retryWrites=true&w=majority'
+	$env:MONGODB_DATABASE = 'goclinical_dev'
+	```
+
+	Mantén la URI privada: no la escribas en `settings.py`, el README, Git ni el chat. La aplicación habilita TLS al crear la conexión; no desactives la verificación TLS.
+4. Comprueba la conexión:
+
+	```powershell
+	.\.venv\Scripts\python.exe manage.py shell -c "from clinical.document_store import _collection; _collection().database.command('ping'); print('Conexión con MongoDB disponible')"
+	```
+
+5. Si el ping funciona, inicia la aplicación en esa misma terminal:
+
+	```powershell
+	.\.venv\Scripts\python.exe manage.py runserver
+	```
+
+	Entra al perfil de paciente o profesional y prueba una carga con un archivo ficticio PDF, PNG o JPEG de hasta 10 MiB. El registro relacionado se guarda en la base configurada para Django y el contenido del archivo en Atlas. No uses documentos clínicos reales. Los archivos de prueba permanecen en Atlas; utiliza una base de desarrollo dedicada y elimínalos desde Atlas cuando termines.
+
 La interfaz usa estas APIs:
 
 - `GET /api/documents/` lista metadatos visibles para el usuario autenticado.
@@ -266,6 +294,52 @@ Pacientes acceden a documentos propios y profesionales a documentos de citas asi
 ```
 
 Se aplican sesiones Django, contraseñas con hash del framework, CSRF, consultas ORM, restricciones y transacciones. El servidor controla el rol y el objeto aunque se cambie una URL o se envíe manualmente una petición. Hay limitación básica de intentos de login por origen (10 intentos, 5 minutos, caché local); no sustituye una solución distribuida de producción.
+
+### Pruebas
+
+Las pruebas automatizadas actuales cubren:
+
+- **Honorarios del profesional:** el navegador muestra solo el 70 % del precio de las atenciones finalizadas; una cita pendiente no se incluye en el total.
+- **Flow sandbox:** verifica la firma de solicitudes, la creación idempotente de reservas y la confirmación del monto y folio sin contactar al servicio real.
+- **Seguimiento con Maps:** verifica permisos, validación de coordenadas, vigencia de la ubicación, estimación de llegada y limpieza al dejar de compartir o cambiar el estado.
+- **Control de acceso por rol:** las URLs de los portales ajenos responden con estado HTTP 403.
+- **Estados de las citas:** una cita avanza secuencialmente de Confirmada a En camino, En atención y Finalizada; las demás citas no cambian y se rechazan avances inválidos.
+- **Diagnóstico de intentos simultáneos de login:** coordina 11 contraseñas incorrectas desde una misma IP para comprobar la condición de carrera del contador actual. Esta prueba pasa cuando reproduce el problema: las 11 solicitudes evitan el bloqueo y el contador queda en 1. No indica que el límite sea seguro.
+- **Documentos, pruebas locales:** valida las firmas PDF/PNG/JPEG, el límite de 10 MiB y la respuesta 503 ante un fallo TLS simulado, sin conectarse a MongoDB.
+- **Documentos, integración Atlas:** carga y descarga un PDF ficticio usando la conexión TLS real; elimina de Atlas el documento creado por la prueba.
+
+Para instalar Playwright y Chromium, necesarios para probar los honorarios calculados en JavaScript:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
+Ejecuta cada prueba de forma independiente:
+
+```powershell
+.\.venv\Scripts\python.exe manage.py test clinical.browser_tests
+.\.venv\Scripts\python.exe manage.py test clinical.tests.RoleTests.test_other_portals_forbidden
+.\.venv\Scripts\python.exe manage.py test clinical.tests.RoleTests.test_advancement_updates_only_selected_appointment
+.\.venv\Scripts\python.exe manage.py test clinical.tests.RoleTests.test_live_tracking_lifecycle
+.\.venv\Scripts\python.exe manage.py test clinical.tests.FlowSignatureTests
+.\.venv\Scripts\python.exe manage.py test clinical.tests.LoginThrottleConcurrencyDiagnosticTests.test_simultaneous_failures_can_exceed_the_throttle_limit
+.\.venv\Scripts\python.exe manage.py test clinical.tests.RoleTests.test_document_upload_rejects_unrelated_user_and_unsupported_content clinical.tests.RoleTests.test_document_upload_accepts_supported_signatures clinical.tests.RoleTests.test_document_upload_enforces_10_mib_limit clinical.tests.RoleTests.test_document_upload_handles_tls_failure
+```
+
+La prueba de honorarios usa una base de datos temporal; no modifica los datos locales de la demostración.
+
+#### Ejecutar la prueba real de Atlas
+
+Esta prueba es independiente y no se ejecuta en la suite normal. Primero configura `MONGODB_URI` y `MONGODB_DATABASE` como se indica en [Conectar MongoDB Atlas para desarrollo](#conectar-mongodb-atlas-para-desarrollo). Debe usarse la base dedicada `goclinical_dev`. En la misma ventana de PowerShell:
+
+```powershell
+$env:RUN_ATLAS_INTEGRATION_TESTS = '1'
+.\.venv\Scripts\python.exe manage.py test clinical.atlas_tests.AtlasDocumentIntegrationTests
+Remove-Item Env:RUN_ATLAS_INTEGRATION_TESTS
+```
+
+La prueba usa una base de datos relacional temporal y solo escribe un documento ficticio en `goclinical_dev`; al terminar, borra de Atlas el documento que creó. Si falla la limpieza, revisa y elimina manualmente únicamente el documento de prueba de esa base. No ejecutes esta prueba contra una base de producción.
 
 La reserva utiliza horarios fijos y rechaza solapamientos entre visitas del espacio de demostración; no calcula disponibilidad a partir de los bloques del profesional. El primer profesional activo del espacio se asigna automáticamente. El alcance está pensado para las tres cuentas iniciales y una presentación local, no para un marketplace con asignación concurrente real.
 
