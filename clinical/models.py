@@ -1,5 +1,6 @@
 import uuid
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 
@@ -33,6 +34,8 @@ class Appointment(models.Model):
     date = models.DateField("fecha")
     time = models.TimeField("hora")
     address = models.CharField("dirección ficticia", max_length=80)
+    destination_latitude = models.FloatField("Latitud de destino", null=True, blank=True, validators=[MinValueValidator(-90), MaxValueValidator(90)])
+    destination_longitude = models.FloatField("Longitud de destino", null=True, blank=True, validators=[MinValueValidator(-180), MaxValueValidator(180)])
     status = models.CharField("estado", max_length=20, choices=STATUS, default="Confirmada")
     price = models.PositiveIntegerField("precio histórico CLP")
     duration = models.PositiveIntegerField("duración histórica en minutos")
@@ -111,3 +114,14 @@ class ClinicalDocument(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self): return f"{self.category} · {self.patient_id}"
+
+
+class TripLocation(models.Model):
+    """Guarda la última posición de una visita activa."""
+
+    appointment = models.OneToOneField(Appointment, on_delete=models.CASCADE, primary_key=True)
+    share_id = models.UUIDField()
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+    received_at = models.DateTimeField()
+    route_requested_at = models.DateTimeField(null=True)

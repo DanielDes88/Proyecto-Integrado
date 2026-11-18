@@ -1,6 +1,6 @@
 # GoClinical Django — portales por usuario
 
-Prototipo académico en Django y SQLite con inicio de sesión y vistas específicas para **paciente, profesional y administrador**, inspirado en los tres mockups de GoClinical adjuntos al proyecto. Los pagos se procesan con Flow en sandbox; los documentos son de demostración.
+Prototipo académico en Django y SQLite con inicio de sesión y vistas específicas para **paciente, profesional y administrador**, inspirado en los tres mockups de GoClinical adjuntos al proyecto. Incluye pagos de prueba con Flow sandbox y seguimiento de visitas con Google Maps; usa únicamente datos y documentos ficticios.
 
 ## Ejecutar en Windows
 
@@ -42,6 +42,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 - Inicio con servicios y calendario de próximas visitas.
 - Catálogo con búsqueda y filtro por categoría.
 - Reservar, pagar en Flow sandbox y consultar el estado confirmado del pago.
+- Ver el seguimiento de la visita mientras el profesional comparte su ubicación.
 - Cancelar visitas confirmadas.
 - Evaluar una atención finalizada; el comentario queda pendiente de moderación.
 - Ver perfil ficticio, historial de pagos y ayuda.
@@ -51,6 +52,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 - Inicio con agenda programada y resumen de prestaciones.
 - Ver únicamente las atenciones que tiene asignadas.
 - Avanzar Confirmada → En camino → En atención → Finalizada.
+- Compartir la ubicación del dispositivo mientras la visita está En camino.
 - Crear o quitar bloques de disponibilidad, rechazando solapamientos.
 - Consultar servicios y su perfil; cargar y descargar documentos vinculados a atenciones.
 - Consultar honorarios ilustrativos (70 % del precio histórico) y registrar el envío de una boleta ficticia.
@@ -82,7 +84,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 - Adaptación web responsive: el contenido y la barra lateral ocupan columnas independientes; en pantallas pequeñas el menú pasa a una fila desplazable. No se usan imágenes de las pantallas originales como sustituto de botones o formularios.
 - Tipografía de sistema Helvetica Neue/Helvetica/Arial; no se distribuyen fuentes comerciales.
 
-La propuesta es una adaptación funcional y simplificada; no reproduce todas las pantallas de los PDFs. No hay login con Google/Apple, mapas reales, chat, notificaciones externas, revisión de certificados, reprogramación, visitas recurrentes ni emisión tributaria. Las boletas indican expresamente que son ejemplos.
+La propuesta es una adaptación funcional y simplificada; no reproduce todas las pantallas de los PDFs. No hay login con Google/Apple, chat, notificaciones externas, revisión de certificados, reprogramación, visitas recurrentes ni emisión tributaria. El seguimiento con Google Maps requiere las claves y permisos indicados más abajo. Las boletas indican expresamente que son ejemplos.
 
 ## Panel nativo de Django
 
@@ -100,17 +102,20 @@ Abre http://127.0.0.1:8000/admin/ con la cuenta que acabas de crear. Allí se pu
 
 | Archivo | Función |
 | --- | --- |
-| `clinical/models.py` | Perfiles, usuarios vinculados a atenciones, servicios, disponibilidad y evaluaciones |
+| `clinical/models.py` | Perfiles, atenciones, pagos, disponibilidad, documentos y ubicación |
 | `clinical/demo.py` | Permisos por acción, consultas por propietario/asignación y reglas del negocio |
-| `clinical/views.py` | Login/logout, rutas de portales y API |
+| `clinical/flow.py` | Checkout, firma y confirmación de pagos Flow |
+| `clinical/tracking.py` | Compartición de ubicación, seguimiento y estimación de llegada |
+| `clinical/views.py` | Login/logout, portales y APIs de negocio |
 | `clinical/templates/clinical/login.html` | Pantalla de acceso |
 | `clinical/templates/clinical/index.html` | Estructura común del portal |
 | `clinical/static/clinical/app.js` | Menús y vistas específicas de cada perfil, formularios y calendarios |
+| `clinical/static/clinical/tracking.js` | Compartición de ubicación y mapa del paciente |
 | `clinical/static/clinical/roles.css` | Paleta GoClinical, login y adaptación por tamaño de pantalla |
 | `clinical/static/clinical/style.css` | Estilos base y componentes reutilizables |
 | `clinical/management/commands/preparar_demo.py` | Cuentas y registros de demostración |
-| `clinical/migrations/` | Migraciones completas, incluida la incorporación de roles |
-| `clinical/tests.py` | Pruebas de acceso, propiedad, operaciones y flujo entre usuarios |
+| `clinical/migrations/` | Migraciones de Flow, Maps y unión de ambas ramas |
+| `clinical/tests.py` | Pruebas de acceso, pagos, seguimiento y operaciones |
 
 ## Bases de datos y documentos
 
@@ -325,3 +330,33 @@ La integración del repositorio queda en **sandbox**. No basta con cambiar la UR
 El callback de confirmación está exento de CSRF porque lo llama Flow, pero no confía en el token recibido: consulta el estado en la API con la clave secreta y valida token, folio y monto antes de marcar `paid`. Mantén este flujo servidor-a-servidor y no aceptes confirmaciones desde el navegador. Esta versión no implementa reembolsos automáticos, conciliación contable, notificaciones al paciente ni reintentos de callback administrados; cancela una atención pagada no devuelve el dinero automáticamente. Define esos procesos operacionales y legales antes de vender servicios reales. Realiza además una revisión de seguridad, privacidad y cumplimiento aplicable al tratamiento de datos de salud en Chile; esta demostración académica no está certificada para datos clínicos reales.
 
 Archivos: `clinical/templates/clinical/public.html` y `clinical/static/clinical/public.css`.
+
+## Seguimiento de una visita con Google Maps
+
+El portal profesional puede enviar la ubicación del dispositivo durante una visita en estado **En camino**. El paciente asignado la ve en **Mi perfil → Seguimiento de mi visita**, junto con el destino y una estimación en automóvil con tráfico cuando Google Routes dispone de una ruta. La posición se solicita cada 10 segundos aproximadamente, el paciente consulta cada 5 segundos y el tiempo de llegada se vuelve a pedir aproximadamente cada minuto mientras se ve el mapa.
+
+### Configuración
+
+1. En Google Cloud, habilita la facturación y activa **Maps JavaScript API** y **Routes API**.
+2. Crea dos claves. Restringe la clave del navegador a **Maps JavaScript API** y a los sitios autorizados, como `http://localhost:8000/*` durante la prueba. Restringe la clave del servidor a **Routes API** y a la IP de salida de Django cuando dispongas de una IP fija.
+3. Desde PowerShell, en la carpeta donde está `manage.py`, configura las variables y ejecuta:
+
+```powershell
+$env:GOOGLE_MAPS_BROWSER_KEY = "CLAVE_DEL_NAVEGADOR"
+$env:GOOGLE_MAPS_ROUTES_KEY = "CLAVE_DEL_SERVIDOR"
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py preparar_demo
+.\.venv\Scripts\python.exe manage.py runserver
+```
+
+Usa `GOOGLE_MAPS_MAP_ID` si tienes un ID de mapa de tipo JavaScript. Por defecto se usa `DEMO_MAP_ID` para pruebas. Mantén la clave del servidor en variables de entorno y fuera del repositorio. Si tu entorno virtual está activo, puedes ejecutar los mismos comandos con `python` o `py`.
+
+### Prueba con dos sesiones
+
+1. Abre `http://localhost:8000/` e inicia sesión como `profesional`. En **Agendamiento**, marca una visita confirmada **En camino** y pulsa **Compartir ubicación**. Concede el permiso de ubicación.
+2. Abre el mismo sitio en otro perfil de navegador o en una ventana privada. Inicia sesión como `paciente` y abre **Mi perfil → Seguimiento de mi visita**. Puedes simular una posición en las herramientas de desarrollo del navegador, por ejemplo latitud `-33.4489` y longitud `-70.6693`.
+3. Comprueba que el marcador se actualiza al cambiar la ubicación simulada y que el mapa deja de mostrarla al pulsar **Dejar de compartir** o al iniciar la atención.
+
+Las reservas ficticias apuntan a Plaza de Armas o Cerro Santa Lucía, en Santiago. Para usar otro destino en una visita, configura su latitud y longitud desde **Panel Django → Atenciones de demostración**. Una visita sin coordenadas de destino reconocidas puede mostrar la posición del profesional, con la estimación de llegada como no disponible.
+
+Para probar desde un teléfono, usa **HTTPS** y asegúrate de que ambas sesiones accedan al mismo servidor. Mantén la página del profesional abierta en primer plano. GoClinical deja de mostrar posiciones de más de 45 segundos. Solo guarda el último punto de cada visita activa, lo elimina al dejar de compartir o iniciar la atención y descarta puntos vencidos al consultar el seguimiento. El cálculo envía a Google las coordenadas de origen y destino. Usa las cuentas y destinos ficticios para esta demostración.

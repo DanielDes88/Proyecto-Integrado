@@ -10,7 +10,7 @@ from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from .flow import sign_params
-from .models import Appointment, ClinicalDocument, Service, UserProfile
+from .models import Appointment, ClinicalDocument, Service, UserProfile, TripLocation
 
 
 class FlowSignatureTests(TestCase):
@@ -148,6 +148,58 @@ class RoleTests(TestCase):
         self.assertEqual(self.state('profesional')['reviews'],[])
         self.assertEqual(self.post('review_approve',role='admin',id=review['id']).status_code,200)
         self.assertEqual(self.state('profesional')['reviews'][0]['status'],'Aprobado')
+    @override_settings(GOOGLE_MAPS_ROUTES_KEY='routes-test')
+    def test_live_tracking_lifecycle(self):
+        visit = Appointment.objects.get(status='Confirmada')
+        url = f'/api/tracking/{visit.pk}/'
+        pro = self.clients['profesional']
+        owner = self.clients['paciente']
+        share_id = str(uuid.uuid4())
+
+        def send(client, action='position', **changes):
+            data = {'action': action, 'share_id': share_id, 'latitude': -33.45, 'longitude': -70.66}
+            return client.post(url, {**data, **changes}, content_type='application/json',
+                               HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+
+        self.assertEqual(send(pro).status_code, 409)
+        self.assertEqual(self.post('advance', role='profesional', id=visit.code,
+                                   expected_status='Confirmada').status_code, 200)
+        self.assertIsNone(owner.get('/api/tracking/').json()['trips'][0]['position'])
+        self.assertEqual(send(owner).status_code, 403)
+        self.assertEqual(send(pro, latitude=True).status_code, 400)
+        self.assertEqual(send(pro, longitude=181).status_code, 400)
+        self.assertEqual(pro.post(url, {}, content_type='application/json').status_code, 403)
+        self.assertEqual(send(pro).status_code, 200)
+        trip = owner.get('/api/tracking/').json()['trips'][0]
+        self.assertEqual(trip['position'], {'lat': -33.45, 'lng': -70.66})
+        self.assertEqual(self.clients['admin'].get('/api/tracking/').status_code, 403)
+        other = get_user_model().objects.create_user('paciente-ajeno')
+        UserProfile.objects.create(user=other, workspace=visit.workspace, role='paciente')
+        client = Client()
+        client.force_login(other)
+        self.assertEqual(client.get('/api/tracking/').json()['trips'], [])
+        self.assertEqual(client.post(url + 'eta/').status_code, 404)
+
+        with patch('clinical.tracking.compute_eta', return_value=180) as route:
+            headers = {'HTTP_X_CSRFTOKEN': owner.cookies['csrftoken'].value}
+            self.assertEqual(owner.post(url + 'eta/', **headers).json()['eta_seconds'], 180)
+            self.assertEqual(owner.post(url + 'eta/', **headers).status_code, 429)
+            route.assert_called_once_with((-33.45, -70.66), (trip['destination']['lat'], trip['destination']['lng']))
+
+        self.assertEqual(send(pro, share_id=str(uuid.uuid4())).status_code, 409)
+        self.assertEqual(send(pro, action='stop').status_code, 200)
+        self.assertIsNone(owner.get('/api/tracking/').json()['trips'][0]['position'])
+        self.assertEqual(send(pro).status_code, 200)
+        TripLocation.objects.filter(appointment=visit).update(received_at=timezone.now() - timedelta(seconds=46))
+        self.assertIsNone(owner.get('/api/tracking/').json()['trips'][0]['position'])
+        self.assertFalse(TripLocation.objects.filter(appointment=visit).exists())
+        self.assertEqual(send(pro).status_code, 200)
+        self.assertEqual(self.post('advance', role='profesional', id=visit.code,
+                                   expected_status='En camino').status_code, 200)
+        self.assertEqual(owner.get('/api/tracking/').json()['trips'], [])
+        self.assertFalse(TripLocation.objects.filter(appointment=visit).exists())
+        self.assertEqual(send(pro).status_code, 409)
+
     def test_cancellation(self):
         a=next(a for a in self.state()['appointments'] if a['status']=='Confirmada')
         self.assertEqual(self.post('cancel',id=a['id']).status_code,200)
