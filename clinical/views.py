@@ -7,7 +7,7 @@ from django.contrib.auth import login, logout
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from django.views.decorators.cache import never_cache
 from django.db import IntegrityError, OperationalError
 from django.urls import reverse
@@ -201,11 +201,12 @@ def flow_confirmation_view(request):
     return HttpResponse('OK')
 
 
+@csrf_exempt
 @never_cache
-@require_GET
+@require_http_methods(["GET", "POST"])
 def flow_return_view(request):
     result = 'error'
-    token = request.GET.get('token','')
+    token = request.GET.get('token') or request.POST.get('token','')
     if token:
         try:
             appointment = confirm_payment(token)

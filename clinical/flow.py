@@ -43,11 +43,12 @@ def _api_request(endpoint, params, method):
     signed_params = {key: str(value) for key, value in params.items()}
     signed_params["apiKey"] = api_key
     signed_params["s"] = sign_params(signed_params, secret_key)
-    encoded = urlencode(signed_params).encode()
+    encoded_params = dict(sorted(signed_params.items())) if method == "GET" else signed_params
+    encoded = urlencode(encoded_params)
     url = f"{base_url}/{endpoint}"
     request = Request(
         f"{url}?{encoded}" if method == "GET" else url,
-        data=None if method == "GET" else encoded,
+        data=None if method == "GET" else encoded.encode(),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method=method,
     )
@@ -55,8 +56,28 @@ def _api_request(endpoint, params, method):
         with urlopen(request, timeout=15) as response:
             result = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
-        logger.warning("Flow respondió HTTP %s para %s", exc.code, endpoint)
-        raise FlowError("Flow rechazó la solicitud de pago.") from exc
+        try:
+            error_data = json.loads(exc.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            error_data = {}
+        if not isinstance(error_data, dict):
+            error_data = {}
+        error_code = error_data.get("code")
+        error_message = error_data.get("message")
+        if not isinstance(error_code, (str, int)):
+            error_code = "desconocido"
+        if not isinstance(error_message, str):
+            error_message = ""
+        logger.warning(
+            "Flow respondió HTTP %s para %s (código %s): %s",
+            exc.code,
+            endpoint,
+            error_code,
+            error_message[:250],
+        )
+        raise FlowError(
+            f"Flow rechazó la solicitud de pago (HTTP {exc.code}, código {error_code})."
+        ) from exc
     except (URLError, TimeoutError, OSError) as exc:
         raise FlowError("No fue posible comunicarse con Flow.") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

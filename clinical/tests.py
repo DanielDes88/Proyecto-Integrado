@@ -1,6 +1,9 @@
 """Permisos por rol, acceso a objetos y recorridos del prototipo."""
 import json
 import uuid
+from io import BytesIO
+from urllib.error import HTTPError
+from urllib.parse import parse_qsl, urlsplit
 from datetime import timedelta
 from unittest.mock import patch
 from django.test import TestCase, Client, override_settings
@@ -9,7 +12,7 @@ from django.core.management import call_command
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
-from .flow import sign_params
+from .flow import FlowError, _api_request, sign_params
 from .models import Appointment, ClinicalDocument, Service, UserProfile
 
 
@@ -20,6 +23,29 @@ class FlowSignatureTests(TestCase):
         params={'currency':'CLP','amount':'5000','apiKey':'key'}
         expected=hmac.new(b'secret',b'amount5000apiKeykeycurrencyCLP',hashlib.sha256).hexdigest()
         self.assertEqual(sign_params(params,'secret'),expected)
+
+    @override_settings(FLOW_API_KEY='test-api-key',FLOW_SECRET_KEY='test-secret-key',FLOW_SITE_URL='https://goclinical.example.test')
+    def test_get_request_serializes_signed_parameters_alphabetically(self):
+        with patch('clinical.flow.urlopen',return_value=BytesIO(b'{}')) as request:
+            _api_request('payment/getStatus',{'token':'test-flow-token'},'GET')
+        query=urlsplit(request.call_args.args[0].full_url).query
+        self.assertEqual([key for key,_ in parse_qsl(query)],['apiKey','s','token'])
+
+    @override_settings(FLOW_API_KEY='test-api-key',FLOW_SECRET_KEY='test-secret-key',FLOW_SITE_URL='https://goclinical.example.test')
+    def test_http_error_exposes_flow_code_and_logs_provider_message(self):
+        error = HTTPError(
+            'https://sandbox.flow.cl/api/payment/create',
+            401,
+            'Unauthorized',
+            {},
+            BytesIO(b'{"code": 401, "message": "Invalid signature"}'),
+        )
+        with patch('clinical.flow.urlopen',side_effect=error):
+            with self.assertLogs('clinical.flow',level='WARNING') as captured:
+                with self.assertRaisesRegex(FlowError,'código 401'):
+                    _api_request('payment/create',{'amount':5000},'POST')
+        self.assertIn('Invalid signature',' '.join(captured.output))
+        self.assertNotIn('test-secret-key',' '.join(captured.output))
 
 
 class RoleTests(TestCase):
@@ -138,6 +164,15 @@ class RoleTests(TestCase):
         self.assertEqual(response.status_code,503)
         appointment.refresh_from_db()
         self.assertFalse(appointment.paid)
+    def test_flow_return_accepts_external_post_and_verifies_token(self):
+        appointment=Appointment.objects.filter(patient__username='paciente').first()
+        appointment.payment_status='paid'
+        client=Client(enforce_csrf_checks=True)
+        with patch('clinical.views.confirm_payment',return_value=appointment) as confirm:
+            response=client.post('/payments/flow/return/',{'token':'test-flow-token'},HTTP_ORIGIN='https://sandbox.flow.cl')
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(response['Location'],'/portal/paciente/?flow_payment=paid#paciente')
+        confirm.assert_called_once_with('test-flow-token')
     def test_advancement_and_review_moderation(self):
         a=next(a for a in self.state()['appointments'] if a['status']=='Confirmada')
         for status in ['Confirmada','En camino','En atención']:
