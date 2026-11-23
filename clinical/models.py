@@ -4,6 +4,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 
+
 class Service(models.Model):
     name = models.CharField("nombre", max_length=100)
     category = models.CharField("categoría", max_length=50)
@@ -63,7 +64,16 @@ class Appointment(models.Model):
     @property
     def code(self): return f"GC-{self.pk:04d}"
     def __str__(self): return self.code
-
+class Transaction(models.Model):
+    STATUS = [("pending", "Pendiente"), ("paid", "Aprobado"), ("rejected", "Rechazado"), ("cancelled", "Cancelado")]
+    appointment = models.ForeignKey(Appointment, on_delete=models.PROTECT, related_name="transactions")
+    flow_order = models.CharField(max_length=30, blank=True, default="")
+    flow_token = models.CharField(max_length=100, null=True, blank=True, unique=True)
+    amount = models.PositiveIntegerField("monto CLP")
+    status = models.CharField(max_length=12, choices=STATUS, default="pending")
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        verbose_name = "transacción"    
 class Applicant(models.Model):
     workspace = models.ForeignKey(DemoWorkspace, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
@@ -73,12 +83,47 @@ class Applicant(models.Model):
     def __str__(self): return self.name
 
 class Review(models.Model):
+    professional = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name='reviews_received')
     appointment = models.OneToOneField(Appointment, on_delete=models.CASCADE)
     rating = models.PositiveSmallIntegerField()
     comment = models.CharField(max_length=300)
     status = models.CharField(max_length=20, choices=[("Pendiente","Pendiente"),("Aprobado","Aprobado")], default="Pendiente")
+    created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         constraints = [models.CheckConstraint(condition=Q(rating__gte=1, rating__lte=5), name="review_rating_range")]
+
+class ProfessionalService(models.Model):
+    """Procedimientos que ofrece cada profesional (catálogo = Service)."""
+    professional = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="offered_services")
+    service = models.ForeignKey(Service, on_delete=models.PROTECT, related_name="offered_by")
+    price = models.PositiveIntegerField("precio propio CLP", null=True, blank=True)
+    active = models.BooleanField("activo", default=True)
+    class Meta:
+        verbose_name = "procedimiento ofrecido"
+        constraints = [models.UniqueConstraint(fields=["professional", "service"], name="professional_service_unique")]
+
+
+class OrdenMedica(models.Model):
+    workspace = models.ForeignKey(DemoWorkspace, on_delete=models.CASCADE)
+    appointment = models.OneToOneField(Appointment, on_delete=models.PROTECT, null=True, blank=True, related_name="orden")
+    patient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="ordenes_recibidas")
+    professional = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="ordenes_emitidas")
+    service = models.ForeignKey(Service, on_delete=models.PROTECT, related_name="ordenes")
+    start_at = models.DateTimeField("inicio")
+    end_at = models.DateTimeField("fin")
+    transaction = models.ForeignKey(Transaction, on_delete=models.SET_NULL, null=True, blank=True, related_name="ordenes")
+    evaluation = models.CharField("evaluación del paciente", max_length=300, blank=True, default="")
+    rating = models.PositiveSmallIntegerField("puntuación al profesional", null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        verbose_name = "orden médica"
+        ordering = ["-start_at"]
+        indexes = [models.Index(fields=["professional", "start_at"])]
+        constraints = [
+            models.CheckConstraint(condition=Q(end_at__gt=models.F("start_at")), name="orden_end_after_start"),
+            models.CheckConstraint(condition=Q(rating__isnull=True) | Q(rating__gte=1, rating__lte=5), name="orden_rating_range"),
+        ]
+    def __str__(self): return f"Orden #{self.pk}"
 
 class Availability(models.Model):
     professional = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE, related_name='availability')

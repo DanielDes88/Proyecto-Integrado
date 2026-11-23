@@ -10,7 +10,11 @@ from urllib.request import Request, urlopen
 from django.conf import settings
 from django.db import transaction
 
-from .models import Appointment
+from .models import Appointment, OrdenMedica, Transaction as PaymentTransaction, Review
+from datetime import datetime, timedelta
+
+from django.db import transaction
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,39 @@ def create_payment(appointment):
 def get_payment_status(token):
     return _api_request("payment/getStatus", {"token": token}, "GET")
 
+def _record_transaction(appointment, token, payment_status):
+    tx, _ = PaymentTransaction.objects.update_or_create(
+        flow_token=token,
+        defaults={
+            "appointment": appointment,
+            "flow_order": appointment.flow_order,
+            "amount": appointment.price,
+            "status": payment_status,
+        }
+    )
+    return tx
+
+def _ensure_orden(appointment, tx):
+    if appointment.patient_id is None or appointment.professional_id is None:
+        return None
+    start = timezone.make_aware(datetime.combine(appointment.date, appointment.time))
+    orden, created = OrdenMedica.objects.get_or_create(
+        appointment=appointment,
+        defaults={
+            "workspace_id": appointment.workspace_id,
+            "patient_id": appointment.patient_id,
+            "professional_id": appointment.professional_id,
+            "service_id": appointment.service_id,
+            "start_at": start,
+            "end_at": start + timedelta(minutes=appointment.duration),
+            "transaction": tx,
+        }
+    )
+    if not created and orden.transaction_id != tx.pk:
+        orden.transaction = tx
+        orden.save(update_fields=["transaction"])
+    return orden
+
 
 def confirm_payment(token):
     if not isinstance(token, str) or not token or len(token) > 100:
@@ -163,4 +200,7 @@ def confirm_payment(token):
             appointment.paid = payment_status == "paid"
             appointment.flow_order = str(status_data.get("flowOrder", ""))[:30]
             appointment.save(update_fields=["payment_status", "paid", "flow_order"])
+            tx = _record_transaction(appointment, token, payment_status)
+            if payment_status == "paid":
+                _ensure_orden(appointment, tx)
     return appointment
