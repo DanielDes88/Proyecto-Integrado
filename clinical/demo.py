@@ -49,7 +49,7 @@ def serialize(w, user):
     return {
       'appointments': [{'id':a.code,'service':a.service_id,'date':a.date.isoformat(),'time':a.time.strftime('%H:%M'),'address':a.address,'status':a.status,'paid':a.paid,'payment_status':a.payment_status,'price':a.price,'patient':a.patient.get_full_name() if a.patient else 'Sin asignar','professional':a.professional.get_full_name() if a.professional else 'Sin asignar'} for a in qs.select_related('patient','professional')],
       'applicants': list(Applicant.objects.filter(workspace=w).values('id','name','area','experience','status')) if p.role=='admin' else [],
-      'reviews': [{'id':x.pk,'appointment':x.appointment.code,'rating':x.rating,'comment':x.comment,'status':x.status} for x in reviews],
+      'reviews': [{'id':x.pk,'appointment':x.appointment.code,'professional':x.professional.get_full_name() if x.professional else 'Sin asignar','rating':x.rating,'comment':x.comment,'status':x.status,'created_at':x.created_at.isoformat()} for x in reviews],
       'slots': [{'id':x.pk,'label':f'{x.weekday} · {x.start:%H:%M} a {x.end:%H:%M}'} for x in slots],
       'bill':p.bill_sent,
       'bills':list(UserProfile.objects.filter(workspace=w,role='profesional',bill_sent=True).values('user__first_name','user__last_name')) if p.role=='admin' else [],
@@ -154,9 +154,13 @@ def act(w, payload, user):
     elif action == 'review':
         a = appointment(w,payload.get('id'),user); rating = integer(payload.get('rating')); comment = payload.get('comment')
         if a.status != 'Finalizada': raise DemoError('Solo puedes evaluar una atención finalizada.',409)
-        if not 1 <= rating <= 5 or comment not in COMMENTS: raise DemoError('Evaluación inválida.')
+        if not isinstance(comment,str): raise DemoError('El comentario no es válido.')
+        comment = comment.strip()
+        if not 1 <= rating <= 5: raise DemoError('Selecciona una puntuación entre 1 y 5.')
+        if not comment: raise DemoError('Escribe un comentario sobre la atención.')
+        if len(comment) > 300: raise DemoError('El comentario no puede superar los 300 caracteres.',400)
         if Review.objects.filter(appointment=a).exists(): raise DemoError('La atención ya fue evaluada.',409)
-        Review.objects.create(appointment=a,rating=rating,comment=comment)
+        Review.objects.create(appointment=a, professional=a.professional, rating=rating, comment=comment)
     elif action == 'review_approve':
         r = Review.objects.filter(appointment__workspace=w,pk=integer(payload.get('id'))).first()
         if not r: raise DemoError('Evaluación no encontrada.',404)
