@@ -22,6 +22,8 @@ class Command(BaseCommand):
             p,_=UserProfile.objects.get_or_create(user=user,defaults={'workspace':w,'role':username})
             if p.workspace_id != w.pk or p.role != username:
                 raise CommandError('Las cuentas existentes tienen una configuración distinta. Revisa sus perfiles antes de continuar.')
+            if username == 'admin' and p.admin_level != 'super_admin':
+                p.admin_level='super_admin';p.save(update_fields=['admin_level'])
             users[username]=user
         if not Appointment.objects.filter(workspace=w).exists(): seed_workspace(w)
         Appointment.objects.filter(workspace=w,patient__isnull=True).update(patient=users['paciente'],professional=users['profesional'])

@@ -45,6 +45,8 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 - Ver el seguimiento de la visita mientras el profesional comparte su ubicación.
 - Cancelar visitas confirmadas.
 - Evaluar una atención finalizada; el comentario queda pendiente de moderación.
+- Postular a profesional indicando especialidad, experiencia y vehículo, adjuntando título/certificado y CV.
+- Consultar el estado de la postulación; si se rechaza, puede enviar una nueva.
 - Ver perfil ficticio, historial de pagos y ayuda.
 
 ### Profesional
@@ -52,6 +54,7 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 - Inicio con agenda programada y resumen de prestaciones.
 - Ver únicamente las atenciones que tiene asignadas.
 - Avanzar Confirmada → En camino → En atención → Finalizada.
+- Si una atención confirmada se cancela porque el profesional deja de estar disponible, ver en el portal un aviso para volver a agendar.
 - Compartir la ubicación del dispositivo mientras la visita está En camino.
 - Crear o quitar bloques de disponibilidad, rechazando solapamientos.
 - Consultar servicios y su perfil; cargar y descargar documentos vinculados a atenciones.
@@ -61,7 +64,9 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 
 - Consultar resumen, tablas de solicitudes y gráficos calculados desde SQLite.
 - Ver cuentas y pacientes del espacio de demostración.
-- Aprobar o rechazar postulaciones ficticias.
+- Revisar postulaciones vinculadas a pacientes y descargar sus documentos dentro del espacio.
+- Aprobar una postulación transforma la cuenta paciente en profesional; rechazarla conserva el rol paciente.
+- Solo el superadministrador puede devolver un profesional al rol paciente. La operación quita su disponibilidad y cancela las atenciones confirmadas con un aviso para reagendar; se bloquea si tiene una visita En camino o En atención. El historial de atenciones finalizadas se conserva.
 - Consultar pagos y conteo de boletas ficticias recibidas.
 - Aprobar comentarios; solo entonces pueden incluirse en la información disponible para el profesional.
 
@@ -163,7 +168,7 @@ La primera vez que se use Neon, `showmigrations` mostrará migraciones pendiente
 
 Crear el esquema y copiar datos son tareas distintas. La aplicación no hace la copia automáticamente. Antes de trasladar registros desde `db.sqlite3`, respalda el archivo, define una ventana de mantenimiento y valida una exportación/importación en una base Neon vacía. No uses `preparar_demo` para copiar. Los metadatos de documentos se guardan en PostgreSQL, pero los bytes están en MongoDB y deben permanecer o trasladarse por un procedimiento separado; cambiar `DATABASE_URL` no mueve archivos entre servicios. No ejecutes una importación de datos reales hasta haber verificado relaciones, conteos y acceso a los documentos.
 
-Los documentos se guardan en dos partes: PostgreSQL (o SQLite local) contiene el registro relacional, propietario, cita, categoría y referencia; MongoDB conserva el contenido como BSON `Binary` en la colección `clinical_documents`, sin GridFS. La conexión se comprueba mediante `ping` y crea un índice por fecha al abrir la colección. No necesitas configurar Neon para desarrollar con SQLite local; sí necesitas MongoDB para cargar y descargar archivos. La interfaz está en Mi perfil para pacientes y profesionales y usa Bootstrap 5.3 para el formulario y el listado responsivos. El límite de carga es 10 MiB y solo se aceptan PDF, PNG y JPEG reconocidos por su firma.
+Los documentos se guardan en dos partes: PostgreSQL (o SQLite local) contiene el registro relacional, propietario, cita, categoría y referencia; MongoDB conserva el contenido como BSON `Binary` en la colección `clinical_documents`, sin GridFS. La conexión se comprueba mediante `ping` y crea un índice por fecha al abrir la colección. No necesitas configurar Neon para desarrollar con SQLite local; sí necesitas MongoDB para cargar y descargar archivos. La interfaz de documentos de atenciones está en Mi perfil para pacientes y profesionales; los antecedentes de postulación se cargan desde Postular a profesional y solo los administradores del mismo espacio pueden descargarlos. El límite es 10 MiB por archivo y solo se aceptan PDF, PNG y JPEG reconocidos por su firma. El flujo de postulación es funcional, pero esta versión no incorpora análisis antimalware ni política de retención: usa únicamente archivos ficticios y no subas documentos personales reales.
 
 ### Conectar MongoDB Atlas
 
@@ -285,8 +290,10 @@ La interfaz usa estas APIs:
 - `GET /api/documents/` lista metadatos visibles para el usuario autenticado.
 - `POST /api/documents/upload/` recibe `multipart/form-data` con `file`, `category` y `appointment` (folio `GC-...`); requiere sesión y CSRF.
 - `GET /api/documents/<id>/download/` transmite el contenido como archivo adjunto solo si el usuario conserva acceso.
+- `POST /api/applications/` recibe `multipart/form-data` con `area`, `experience`, `has_vehicle`, `credential` y `cv`; solo pacientes autenticados pueden enviar y ambos documentos son obligatorios.
+- `GET /api/applications/<application_id>/documents/<document_id>/download/` permite descargar los antecedentes únicamente a administradores del espacio de la postulación.
 
-Pacientes acceden a documentos propios y profesionales a documentos de citas asignadas. Administración no obtiene acceso general al contenido: solo ve o descarga archivos que subió. No hay transacción distribuida entre PostgreSQL y MongoDB; si falla el alta de metadatos, Django intenta borrar el BSON recién guardado. Esta función no incorpora análisis antimalware ni política de retención y no debe habilitarse con documentos clínicos reales antes de una revisión de seguridad, privacidad y requisitos legales.
+Pacientes acceden a documentos propios y profesionales a documentos de citas asignadas. Los administradores pueden descargar documentos de postulaciones del mismo espacio, pero no obtienen acceso general a archivos clínicos. No hay transacción distribuida entre PostgreSQL y MongoDB; si falla el alta de metadatos, Django intenta borrar el BSON recién guardado. Esta función no incorpora análisis antimalware ni política de retención y no debe habilitarse con documentos clínicos o personales reales antes de una revisión de seguridad, privacidad y requisitos legales.
 
 ## Validación y límites
 
@@ -305,6 +312,7 @@ Las pruebas automatizadas actuales cubren:
 - **Flow sandbox:** verifica la firma de solicitudes, la creación idempotente de reservas y la confirmación del monto y folio sin contactar al servicio real.
 - **Seguimiento con Maps:** verifica permisos, validación de coordenadas, vigencia de la ubicación, estimación de llegada y limpieza al dejar de compartir o cambiar el estado.
 - **Control de acceso por rol:** las URLs de los portales ajenos responden con estado HTTP 403.
+- **Postulaciones profesionales:** valida campos y documentos obligatorios, impide solicitudes pendientes duplicadas, limita la descarga de antecedentes al administrador del espacio y verifica que la aprobación convierta al paciente en profesional mientras el rechazo conserva el rol.
 - **Estados de las citas:** una cita avanza secuencialmente de Confirmada a En camino, En atención y Finalizada; las demás citas no cambian y se rechazan avances inválidos.
 - **Diagnóstico de intentos simultáneos de login:** coordina 11 contraseñas incorrectas desde una misma IP para comprobar la condición de carrera del contador actual. Esta prueba pasa cuando reproduce el problema: las 11 solicitudes evitan el bloqueo y el contador queda en 1. No indica que el límite sea seguro.
 - **Documentos, pruebas locales:** valida las firmas PDF/PNG/JPEG, el límite de 10 MiB y la respuesta 503 ante un fallo TLS simulado, sin conectarse a MongoDB.

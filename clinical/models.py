@@ -38,6 +38,7 @@ class Appointment(models.Model):
     destination_latitude = models.FloatField("Latitud de destino", null=True, blank=True, validators=[MinValueValidator(-90), MaxValueValidator(90)])
     destination_longitude = models.FloatField("Longitud de destino", null=True, blank=True, validators=[MinValueValidator(-180), MaxValueValidator(180)])
     status = models.CharField("estado", max_length=20, choices=STATUS, default="Confirmada")
+    patient_notice = models.TextField(blank=True, default="")
     price = models.PositiveIntegerField("precio histórico CLP")
     duration = models.PositiveIntegerField("duración histórica en minutos")
     payment_key = models.UUIDField(default=uuid.uuid4)
@@ -76,10 +77,24 @@ class Transaction(models.Model):
         verbose_name = "transacción"    
 class Applicant(models.Model):
     workspace = models.ForeignKey(DemoWorkspace, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="professional_applications")
     name = models.CharField(max_length=100)
     area = models.CharField(max_length=50)
     experience = models.CharField(max_length=30)
+    has_vehicle = models.BooleanField("dispone de vehículo propio", default=False)
     status = models.CharField(max_length=20, choices=[(x,x) for x in ["Pendiente","Aprobado","Rechazado"]], default="Pendiente")
+    submitted_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="reviewed_applications")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True, default="")
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "workspace"],
+                condition=Q(user__isnull=False, status="Pendiente"),
+                name="applicant_one_pending_per_user",
+            ),
+        ]
     def __str__(self): return self.name
 
 class Review(models.Model):
@@ -137,11 +152,59 @@ class Availability(models.Model):
 
 class UserProfile(models.Model):
     ROLES = [('paciente','Paciente'),('profesional','Profesional'),('admin','Administrador')]
+    ADMIN_LEVELS = [('normal','Administrador'),('super_admin','Superadministrador')]
     user = models.OneToOneField(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='clinical_profile')
     role = models.CharField(max_length=20,choices=ROLES)
+    admin_level = models.CharField(max_length=20, choices=ADMIN_LEVELS, default="normal")
     workspace = models.ForeignKey(DemoWorkspace,on_delete=models.PROTECT)
+    date_of_birth = models.DateField("fecha de nacimiento", null=True, blank=True)
+    phone = models.CharField("teléfono", max_length=30, blank=True, default="")
+    address = models.CharField("dirección", max_length=250, blank=True, default="")
+    city = models.CharField("comuna/ciudad", max_length=100, blank=True, default="")
     bill_sent = models.BooleanField(default=False)
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(role="admin") | Q(admin_level="normal"),
+                name="super_admin_requires_admin_role",
+            ),
+        ]
     def __str__(self): return f'{self.user.username} — {self.get_role_display()}'
+
+class UserRoleChange(models.Model):
+    workspace = models.ForeignKey(DemoWorkspace, on_delete=models.PROTECT, related_name="role_changes")
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="role_changes_made")
+    target_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="role_changes_received")
+    previous_role = models.CharField(max_length=20, choices=UserProfile.ROLES)
+    new_role = models.CharField(max_length=20, choices=UserProfile.ROLES)
+    previous_admin_level = models.CharField(max_length=20, choices=UserProfile.ADMIN_LEVELS)
+    new_admin_level = models.CharField(max_length=20, choices=UserProfile.ADMIN_LEVELS)
+    changed_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering = ["-changed_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(changed_by=models.F("target_user")),
+                name="role_change_actor_not_target",
+            ),
+        ]
+    def __str__(self): return f"{self.changed_by_id} → {self.target_user_id}: {self.new_role}"
+
+class ApplicantDocument(models.Model):
+    applicant = models.ForeignKey(Applicant, on_delete=models.PROTECT, related_name="documents")
+    document_type = models.CharField("tipo de credencial", max_length=60)
+    original_name = models.CharField(max_length=120)
+    content_type = models.CharField(max_length=40)
+    size = models.PositiveIntegerField()
+    mongo_id = models.CharField(max_length=24, unique=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering = ["uploaded_at"]
+        constraints = [
+            models.CheckConstraint(condition=Q(size__gt=0), name="applicant_document_size_positive"),
+        ]
+        verbose_name = "documento de postulación"
+    def __str__(self): return f"{self.document_type} · {self.applicant_id}"
 
 class ClinicalDocument(models.Model):
     CATEGORIES = [(x, x) for x in ["Receta médica", "Orden médica", "Diagnóstico", "Examen", "Otro"]]

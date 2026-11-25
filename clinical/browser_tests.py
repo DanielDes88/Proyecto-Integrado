@@ -24,10 +24,23 @@ class ProfessionalFeesBrowserTests(StaticLiveServerTestCase):
             username="browser-patient",
             password="BrowserTest123!",
         )
+        self.patient = patient
+        admin = user_model.objects.create_user(
+            username="browser-admin",
+            password="BrowserTest123!",
+            first_name="Admin",
+            last_name="Prueba",
+        )
         self.workspace = DemoWorkspace.objects.create()
         UserProfile.objects.create(
             user=self.professional,
             role="profesional",
+            workspace=self.workspace,
+        )
+        UserProfile.objects.create(
+            user=admin,
+            role="admin",
+            admin_level="super_admin",
             workspace=self.workspace,
         )
         UserProfile.objects.create(
@@ -50,6 +63,14 @@ class ProfessionalFeesBrowserTests(StaticLiveServerTestCase):
         self.pending_appointment = self.create_appointment(
             service, patient, today + timedelta(days=31), "Confirmada", 20_000
         )
+        self.cancelled_appointment = self.create_appointment(
+            service, patient, today + timedelta(days=32), "Cancelada", 30_000
+        )
+        self.cancelled_appointment.patient_notice = (
+            "Esta atención fue cancelada porque el profesional ya no está disponible. "
+            "Por favor, vuelve a agendar este servicio desde el catálogo."
+        )
+        self.cancelled_appointment.save(update_fields=["patient_notice"])
 
         self.playwright = sync_playwright().start()
         self.addCleanup(self.playwright.stop)
@@ -121,3 +142,114 @@ class ProfessionalFeesBrowserTests(StaticLiveServerTestCase):
             has_text="Honorarios ilustrativos"
         ).locator("strong")
         self.assertEqual(self.displayed_amount(updated_home_fees), "21000")
+
+    def test_application_png_selection_survives_focus_refresh(self):
+        patient_context = self.browser.new_context()
+        self.addCleanup(patient_context.close)
+        page = patient_context.new_page()
+        page.goto(f"{self.live_server_url}/login/")
+        page.get_by_label("Nombre de usuario").fill(self.patient.username)
+        page.get_by_label("Contraseña").fill("BrowserTest123!")
+        page.get_by_role("button", name="Iniciar sesión").click()
+        page.wait_for_url("**/portal/paciente/")
+        page.get_by_role("link", name="Postular a profesional").click()
+
+        credential = page.locator("#applicationCredential")
+        credential.dispatch_event("click")
+        credential.set_input_files({
+            "name": "titulo.png",
+            "mimeType": "image/png",
+            "buffer": b"\x89PNG\r\n\x1a\n",
+        })
+
+        with page.expect_response("**/api/state/"):
+            page.evaluate("window.dispatchEvent(new Event('focus'))")
+
+        self.assertEqual(
+            page.locator("#applicationCredential").evaluate(
+                "(input) => input.files[0]?.name"
+            ),
+            "titulo.png",
+        )
+
+    def test_patient_home_shows_cancellation_notice_and_reschedule_link(self):
+        patient_context = self.browser.new_context()
+        self.addCleanup(patient_context.close)
+        page = patient_context.new_page()
+        page.goto(f"{self.live_server_url}/login/")
+        page.get_by_label("Nombre de usuario").fill(self.patient.username)
+        page.get_by_label("Contraseña").fill("BrowserTest123!")
+        page.get_by_role("button", name="Iniciar sesión").click()
+        page.wait_for_url("**/portal/paciente/")
+
+        alert = page.get_by_role("status").filter(has_text=self.cancelled_appointment.code)
+        self.assertTrue(alert.is_visible())
+        self.assertIn(self.cancelled_appointment.patient_notice, alert.inner_text())
+        self.assertEqual(
+            alert.get_by_role("link", name="Volver a agendar").get_attribute("href"),
+            "#servicios",
+        )
+
+    def test_evaluation_form_has_polished_star_and_comment_layout(self):
+        patient_context = self.browser.new_context()
+        self.addCleanup(patient_context.close)
+        page = patient_context.new_page()
+        page.goto(f"{self.live_server_url}/login/")
+        page.get_by_label("Nombre de usuario").fill(self.patient.username)
+        page.get_by_label("Contraseña").fill("BrowserTest123!")
+        page.get_by_role("button", name="Iniciar sesión").click()
+        page.wait_for_url("**/portal/paciente/")
+        page.goto(f"{self.live_server_url}/portal/paciente/#paciente")
+        page.locator('#main .tabs [data-sub="historial"]').wait_for()
+        page.locator('#main .tabs [data-sub="historial"]').click()
+
+        finished_card = page.locator("#main article.appointment").filter(
+            has_text=self.finished_appointment.code
+        )
+        finished_card.get_by_role("button", name="Evaluar").click()
+        dialog = page.get_by_role("dialog")
+        self.assertEqual(dialog.locator(".review-star").count(), 5)
+        self.assertEqual(dialog.locator("textarea#comment").count(), 1)
+        self.assertEqual(dialog.locator("select").count(), 0)
+        dialog.get_by_role("radio", name="1 de 5 estrellas").click()
+        dialog.locator("textarea#comment").fill("Puntual")
+        self.assertIn("1 de 5 estrellas seleccionadas", dialog.inner_text())
+        self.assertIn("7/300", dialog.inner_text())
+        self.assertNotIn("pendiente de aprobación", dialog.inner_text())
+        star_style = dialog.get_by_role("radio", name="1 de 5 estrellas").evaluate(
+            "(element) => { const style = getComputedStyle(element); return {color: style.color, background: style.backgroundColor, className: element.className}; }"
+        )
+        self.assertEqual(star_style["color"], "rgb(233, 166, 47)")
+        self.assertEqual(star_style["background"], "rgb(255, 242, 207)")
+        self.assertEqual(
+            dialog.locator("textarea#comment").evaluate(
+                "(element) => getComputedStyle(element).minHeight"
+            ),
+            "144px",
+        )
+
+    def test_super_admin_can_return_professional_to_patient_from_account_table(self):
+        admin_context = self.browser.new_context()
+        self.addCleanup(admin_context.close)
+        page = admin_context.new_page()
+        page.goto(f"{self.live_server_url}/login/")
+        page.get_by_label("Nombre de usuario").fill("browser-admin")
+        page.get_by_label("Contraseña").fill("BrowserTest123!")
+        page.get_by_role("button", name="Iniciar sesión").click()
+        page.wait_for_url("**/portal/admin/")
+        page.get_by_role("link", name="Gestión de cuentas").click()
+        page.wait_for_function(
+            "document.querySelector('#main').textContent.includes('Postulaciones y cuentas registradas')"
+        )
+
+        professional_row = page.get_by_role("row").filter(has_text="Profesional Prueba")
+        professional_row.get_by_role("button", name="Volver a paciente").click()
+        page.get_by_role("dialog").get_by_role("button", name="Confirmar cambio").click()
+
+        professional_row = page.get_by_role("row").filter(has_text="Profesional Prueba")
+        professional_row.get_by_role("cell").nth(2).get_by_text("Paciente").wait_for()
+        self.assertIn("Paciente", professional_row.inner_text())
+        self.assertEqual(
+            professional_row.get_by_role("button", name="Volver a paciente").count(),
+            0,
+        )

@@ -16,7 +16,7 @@ from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from .flow import FlowError, _api_request, sign_params
-from .models import Appointment, ClinicalDocument, Service, UserProfile, TripLocation
+from .models import Applicant, ApplicantDocument, Appointment, Availability, ClinicalDocument, DemoWorkspace, Service, UserProfile, UserRoleChange, TripLocation
 
 
 class FlowSignatureTests(TestCase):
@@ -73,6 +73,21 @@ class RoleTests(TestCase):
         return c.post('/api/payments/flow/checkout/',json.dumps(data),content_type='application/json',HTTP_X_CSRFTOKEN=c.cookies['csrftoken'].value)
     def state(self,role='paciente'):return self.clients[role].get('/api/state/').json()['state']
     def data(self,**changes):return {'service':Service.objects.first().pk,'date':(timezone.localdate()+timedelta(days=10)).isoformat(),'time':'09:00','address':'Domicilio de demostración','accepted':True,'payment_key':str(uuid.uuid4()),**changes}
+    def submit_application(self, role='paciente', **changes):
+        data={
+            'area':'Kinesiología',
+            'experience':'3 años',
+            'has_vehicle':'true',
+            'credential':SimpleUploadedFile('titulo.pdf',b'%PDF-1.7\ntitulo',content_type='application/pdf'),
+            'cv':SimpleUploadedFile('cv.pdf',b'%PDF-1.7\ncv',content_type='application/pdf'),
+        }
+        data.update(changes)
+        client=self.clients[role]
+        return client.post(
+            '/api/applications/',
+            data,
+            HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value,
+        )
     def test_login_redirects_each_role(self):
         for role in self.clients:
             c=Client();r=c.post('/login/',{'username':role,'password':'GoClinical2026!'})
@@ -94,7 +109,7 @@ class RoleTests(TestCase):
             for other in self.clients:
                 if other!=role:self.assertEqual(c.get('/portal/'+other+'/').status_code,403)
     def test_forbidden_actions(self):
-        for action in ['advance','approve','slot_add','bill','review_approve']:
+        for action in ['advance','approve','slot_add','bill','review_approve','set_user_role']:
             self.assertEqual(self.post(action).status_code,403)
         for action in ['reserve','cancel','approve','review']:
             self.assertEqual(self.post(action,role='profesional').status_code,403)
@@ -291,8 +306,264 @@ class RoleTests(TestCase):
     def test_postulation_and_private_collections(self):
         self.assertEqual(self.state()['applicants'],[])
         self.assertEqual(self.state('profesional')['accounts'],[])
-        a=self.state('admin')['applicants'][0]
-        self.assertEqual(self.post('approve',role='admin',id=a['id']).status_code,200)
+        self.assertEqual(self.state('admin')['applicants'],[])
+
+    def test_patient_application_requires_both_documents_and_vehicle_answer(self):
+        missing_cv=self.submit_application(cv='')
+        self.assertEqual(missing_cv.status_code,400)
+        self.assertFalse(Applicant.objects.exists())
+
+        missing_vehicle=self.submit_application(has_vehicle='')
+        self.assertEqual(missing_vehicle.status_code,400)
+        self.assertFalse(Applicant.objects.exists())
+
+        self.assertEqual(
+            self.submit_application('profesional').status_code,
+            403,
+        )
+
+    def test_patient_can_submit_application_and_admin_can_download_documents(self):
+        with patch(
+            'clinical.views.save_document',
+            side_effect=['0123456789abcdef01234567','0123456789abcdef01234568'],
+        ) as save:
+            response=self.submit_application(has_vehicle='false')
+        self.assertEqual(response.status_code,201)
+        self.assertEqual(save.call_count,2)
+
+        applicant=Applicant.objects.get()
+        self.assertEqual(applicant.user.username,'paciente')
+        self.assertEqual((applicant.area,applicant.experience,applicant.has_vehicle),('Kinesiología','3 años',False))
+        self.assertEqual(applicant.documents.count(),2)
+        patient_state=self.state()
+        self.assertEqual(patient_state['applicants'],[])
+        self.assertEqual(patient_state['my_application']['status'],'Pendiente')
+        admin_application=self.state('admin')['applicants'][0]
+        self.assertEqual(admin_application['email'],applicant.user.email)
+        self.assertEqual(len(admin_application['documents']),2)
+
+        document=ApplicantDocument.objects.filter(applicant=applicant).first()
+        url=f'/api/applications/{applicant.pk}/documents/{document.pk}/download/'
+        self.assertEqual(self.clients['paciente'].get(url).status_code,403)
+        other_admin=get_user_model().objects.create_user('other-admin')
+        UserProfile.objects.create(
+            user=other_admin,
+            role='admin',
+            workspace=DemoWorkspace.objects.create(),
+        )
+        other_client=Client()
+        other_client.force_login(other_admin)
+        self.assertEqual(other_client.get(url).status_code,404)
+        with patch('clinical.views.read_document',return_value=b'%PDF-1.7\ntitulo'):
+            downloaded=self.clients['admin'].get(url)
+        self.assertEqual(downloaded.status_code,200)
+        self.assertEqual(downloaded.content,b'%PDF-1.7\ntitulo')
+        self.assertIn('private, no-store',downloaded['Cache-Control'])
+
+    def test_approval_promotes_the_applicant_and_records_who_reviewed(self):
+        with patch(
+            'clinical.views.save_document',
+            side_effect=['1123456789abcdef01234567','1123456789abcdef01234568'],
+        ):
+            self.assertEqual(self.submit_application().status_code,201)
+        applicant=Applicant.objects.get()
+        UserProfile.objects.filter(user__username='admin').update(admin_level='normal')
+
+        response=self.post('approve',role='admin',id=applicant.pk)
+
+        self.assertEqual(response.status_code,200)
+        applicant.refresh_from_db()
+        profile=UserProfile.objects.get(user__username='paciente')
+        self.assertEqual((applicant.status,applicant.reviewed_by.username),('Aprobado','admin'))
+        self.assertIsNotNone(applicant.reviewed_at)
+        self.assertEqual(profile.role,'profesional')
+        change=UserRoleChange.objects.get(target_user=applicant.user)
+        self.assertEqual((change.previous_role,change.new_role),('paciente','profesional'))
+
+    def test_only_one_pending_application_can_be_submitted(self):
+        with patch(
+            'clinical.views.save_document',
+            side_effect=['3123456789abcdef01234567','3123456789abcdef01234568'],
+        ) as save:
+            self.assertEqual(self.submit_application().status_code,201)
+            self.assertEqual(self.submit_application().status_code,409)
+        self.assertEqual(save.call_count,2)
+        self.assertEqual(Applicant.objects.filter(status='Pendiente').count(),1)
+
+    def test_rejection_keeps_the_applicant_as_patient_and_cannot_be_repeated(self):
+        with patch(
+            'clinical.views.save_document',
+            side_effect=['2123456789abcdef01234567','2123456789abcdef01234568'],
+        ):
+            self.assertEqual(self.submit_application().status_code,201)
+        applicant=Applicant.objects.get()
+
+        self.assertEqual(self.post('reject',role='admin',id=applicant.pk).status_code,200)
+        applicant.refresh_from_db()
+        self.assertEqual(applicant.status,'Rechazado')
+        self.assertEqual(applicant.user.clinical_profile.role,'paciente')
+        self.assertEqual(self.post('reject',role='admin',id=applicant.pk).status_code,409)
+    def test_super_admin_can_promote_patient_and_audit_role_change(self):
+        patient = UserProfile.objects.get(user__username='paciente')
+        response = self.post(
+            'set_user_role', role='admin', user_id=patient.user_id,
+            target_role='admin', admin_level='normal',
+        )
+        self.assertEqual(response.status_code,200)
+        patient.refresh_from_db()
+        self.assertEqual((patient.role,patient.admin_level),('admin','normal'))
+        change = UserRoleChange.objects.get(target_user_id=patient.user_id)
+        self.assertEqual(change.changed_by.username,'admin')
+        self.assertEqual((change.previous_role,change.new_role),('paciente','admin'))
+        self.assertEqual(self.clients['paciente'].get('/portal/paciente/').status_code,403)
+    def test_super_admin_can_return_professional_to_patient_and_notify_affected_patient(self):
+        professional = UserProfile.objects.get(user__username='profesional')
+        patient = UserProfile.objects.get(user__username='paciente')
+        service = Service.objects.first()
+        confirmed = Appointment.objects.create(
+            workspace=professional.workspace,
+            patient=patient.user,
+            professional=professional.user,
+            service=service,
+            date=timezone.localdate()+timedelta(days=30),
+            time='14:00',
+            address='Domicilio de demostración',
+            status='Confirmada',
+            price=service.price,
+            duration=service.duration,
+        )
+        finished = Appointment.objects.create(
+            workspace=professional.workspace,
+            patient=patient.user,
+            professional=professional.user,
+            service=service,
+            date=timezone.localdate()+timedelta(days=31),
+            time='14:00',
+            address='Domicilio de demostración',
+            status='Finalizada',
+            price=service.price,
+            duration=service.duration,
+        )
+        Availability.objects.create(
+            workspace=professional.workspace,
+            professional=professional.user,
+            weekday='Lunes',
+            start='09:00',
+            end='12:00',
+        )
+
+        response = self.post(
+            'set_user_role', role='admin', user_id=professional.user_id,
+            target_role='paciente', admin_level='normal',
+        )
+
+        self.assertEqual(response.status_code,200)
+        professional.refresh_from_db()
+        confirmed.refresh_from_db()
+        finished.refresh_from_db()
+        self.assertEqual(professional.role,'paciente')
+        self.assertEqual(
+            (confirmed.status,confirmed.professional_id),
+            ('Cancelada',None),
+        )
+        self.assertTrue(confirmed.patient_notice)
+        self.assertEqual((finished.status,finished.professional_id),('Finalizada',professional.user_id))
+        self.assertFalse(Availability.objects.filter(workspace=professional.workspace,professional=professional.user).exists())
+        patient_appointments = self.state()['appointments']
+        notified = next(item for item in patient_appointments if item['id']==confirmed.code)
+        self.assertEqual(notified['patient_notice'],confirmed.patient_notice)
+        self.assertEqual(notified['status'],'Cancelada')
+        change = UserRoleChange.objects.get(target_user=professional.user)
+        self.assertEqual((change.previous_role,change.new_role),('profesional','paciente'))
+    def test_professional_cannot_be_demoted_while_visit_is_in_progress(self):
+        professional = UserProfile.objects.get(user__username='profesional')
+        patient = UserProfile.objects.get(user__username='paciente')
+        service = Service.objects.first()
+        confirmed = Appointment.objects.create(
+            workspace=professional.workspace,
+            patient=patient.user,
+            professional=professional.user,
+            service=service,
+            date=timezone.localdate()+timedelta(days=30),
+            time='14:00',
+            address='Domicilio de demostración',
+            status='Confirmada',
+            price=service.price,
+            duration=service.duration,
+        )
+        for index, status in enumerate(['En camino','En atención']):
+            Appointment.objects.create(
+                workspace=professional.workspace,
+                patient=patient.user,
+                professional=professional.user,
+                service=service,
+                date=timezone.localdate()+timedelta(days=31+index),
+                time='14:00',
+                address='Domicilio de demostración',
+                status=status,
+                price=service.price,
+                duration=service.duration,
+            )
+        slot = Availability.objects.create(
+            workspace=professional.workspace,
+            professional=professional.user,
+            weekday='Lunes',
+            start='09:00',
+            end='12:00',
+        )
+
+        response = self.post(
+            'set_user_role', role='admin', user_id=professional.user_id,
+            target_role='paciente', admin_level='normal',
+        )
+
+        self.assertEqual(response.status_code,409)
+        professional.refresh_from_db()
+        confirmed.refresh_from_db()
+        self.assertEqual(professional.role,'profesional')
+        self.assertEqual((confirmed.status,confirmed.professional_id),('Confirmada',professional.user_id))
+        self.assertTrue(Availability.objects.filter(pk=slot.pk).exists())
+        self.assertFalse(UserRoleChange.objects.filter(target_user=professional.user).exists())
+    def test_super_admin_can_assign_another_super_admin(self):
+        patient = UserProfile.objects.get(user__username='paciente')
+        response = self.post(
+            'set_user_role', role='admin', user_id=patient.user_id,
+            target_role='admin', admin_level='super_admin',
+        )
+        self.assertEqual(response.status_code,200)
+        patient.refresh_from_db()
+        self.assertEqual((patient.role,patient.admin_level),('admin','super_admin'))
+    def test_normal_admin_cannot_change_account_roles(self):
+        workspace = UserProfile.objects.get(user__username='admin').workspace
+        normal_admin = get_user_model().objects.create_user('normal-admin',password='Demo123456!')
+        UserProfile.objects.create(user=normal_admin,role='admin',admin_level='normal',workspace=workspace)
+        patient = UserProfile.objects.get(user__username='paciente')
+        professional = UserProfile.objects.get(user__username='profesional')
+        client = Client()
+        client.force_login(normal_admin)
+        patient_response = client.post(
+            '/api/action/',
+            {'action':'set_user_role','user_id':patient.user_id,'target_role':'admin','admin_level':'normal'},
+            content_type='application/json',
+        )
+        professional_response = client.post(
+            '/api/action/',
+            {'action':'set_user_role','user_id':professional.user_id,'target_role':'paciente','admin_level':'normal'},
+            content_type='application/json',
+        )
+        self.assertEqual(patient_response.status_code,403)
+        self.assertEqual(professional_response.status_code,403)
+        patient.refresh_from_db()
+        professional.refresh_from_db()
+        self.assertEqual(patient.role,'paciente')
+        self.assertEqual(professional.role,'profesional')
+    def test_super_admin_cannot_change_own_role(self):
+        admin = UserProfile.objects.get(user__username='admin')
+        response = self.post(
+            'set_user_role', role='admin', user_id=admin.user_id,
+            target_role='paciente', admin_level='normal',
+        )
+        self.assertEqual(response.status_code,403)
     def test_csrf_logout_and_admin(self):
         self.assertEqual(self.client.post('/api/action/',{'action':'reserve'},content_type='application/json').status_code,403)
         self.assertEqual(self.client.get('/logout/').status_code,405)
@@ -440,3 +711,72 @@ class LoginThrottleConcurrencyDiagnosticTests(TransactionTestCase):
         throttled=sum('Demasiados intentos' in response.content.decode() for response in responses)
         self.assertEqual(throttled,0)
         self.assertEqual(cache.get(rate_limit_key),1)
+
+
+class PatientRegistrationTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        call_command('preparar_demo', verbosity=0)
+
+    def registration_data(self, **overrides):
+        data = {
+            'first_name': 'Andrea',
+            'last_name': 'Silva',
+            'date_of_birth': '1990-02-14',
+            'phone': '+56912345678',
+            'email': 'andrea.silva@example.test',
+            'address': 'Avenida Central 123',
+            'city': 'Santiago',
+            'username': 'andrea-silva',
+            'password1': 'V!7mQ2#rP9zL',
+            'password2': 'V!7mQ2#rP9zL',
+        }
+        data.update(overrides)
+        return data
+
+    def test_registration_creates_patient_in_clinic_workspace_and_logs_in(self):
+        response = self.client.post('/register/', self.registration_data())
+
+        self.assertRedirects(response, '/portal/paciente/')
+        user = get_user_model().objects.get(username='andrea-silva')
+        profile = user.clinical_profile
+        clinic_workspace = UserProfile.objects.get(user__username='admin').workspace
+        self.assertEqual(profile.role, 'paciente')
+        self.assertEqual(profile.workspace, clinic_workspace)
+        self.assertEqual(profile.date_of_birth.isoformat(), '1990-02-14')
+        self.assertEqual(profile.phone, '+56912345678')
+        self.assertEqual(profile.address, 'Avenida Central 123')
+        self.assertEqual(profile.city, 'Santiago')
+        self.assertTrue(user.check_password('V!7mQ2#rP9zL'))
+        self.assertEqual(self.client.session['_auth_user_id'], str(user.pk))
+        portal = self.client.get('/portal/paciente/')
+        self.assertContains(portal, '1990-02-14')
+        self.assertContains(portal, 'Avenida Central 123')
+
+    def test_registration_rejects_duplicate_email_case_insensitively(self):
+        data = self.registration_data(
+            username='another-patient',
+            email='EMILIOXD.7@GMAIL.COM',
+        )
+
+        response = self.client.post('/register/', data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('email', response.context['form'].errors)
+        self.assertFalse(get_user_model().objects.filter(username='another-patient').exists())
+
+    def test_registration_fails_when_clinic_workspace_is_ambiguous_or_missing(self):
+        UserProfile.objects.filter(role='admin', admin_level='super_admin').delete()
+
+        response = self.client.post('/register/', self.registration_data())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn(
+            'El registro no está disponible por el momento.',
+            response.context['form'].non_field_errors()[0],
+        )
+        self.assertFalse(get_user_model().objects.filter(username='andrea-silva').exists())
+
+    def test_registration_is_linked_from_login_and_public_home(self):
+        self.assertContains(self.client.get('/login/'), '/register/')
+        self.assertContains(self.client.get('/'), '/register/')
