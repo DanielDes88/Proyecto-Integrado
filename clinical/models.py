@@ -3,6 +3,7 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.urls import reverse
 
 
 class Service(models.Model):
@@ -13,10 +14,27 @@ class Service(models.Model):
     duration = models.PositiveIntegerField("duración en minutos", default=30)
     code = models.CharField("código", max_length=20, unique=True)
     description = models.CharField("descripción", max_length=250)
+    image_data = models.BinaryField(default=bytes, blank=True, editable=False)
+    image_content_type = models.CharField(max_length=30, blank=True, default="", editable=False)
+    revision = models.UUIDField(default=uuid.uuid4, editable=False)
+    is_active = models.BooleanField("disponible en el catálogo", default=True)
+    creation_key = models.UUIDField(null=True, blank=True, unique=True, editable=False)
     class Meta:
         ordering = ["id"]
         verbose_name = "servicio"
         constraints = [models.CheckConstraint(condition=Q(duration__gt=0), name="service_duration_positive")]
+    @property
+    def image_url(self):
+        if not self.image_content_type:
+            return ""
+        return reverse("service_image", args=[self.pk, self.revision])
+
+    def save(self, *args, **kwargs):
+        self.revision = uuid.uuid4()
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"revision"}
+        super().save(*args, **kwargs)
+
     def __str__(self): return self.name
 
 class DemoWorkspace(models.Model):

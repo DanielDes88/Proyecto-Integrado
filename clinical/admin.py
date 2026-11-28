@@ -4,9 +4,12 @@ admin.site.site_header = "GoClinical · Administración Django"
 admin.site.site_title = "GoClinical"
 @admin.register(Service)
 class ServiceAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "category", "price", "duration")
+    def get_queryset(self, request):
+        return super().get_queryset(request).defer("image_data")
+
+    list_display = ("code", "name", "category", "price", "duration", "is_active")
     search_fields = ("name", "code")
-    list_filter = ("category",)
+    list_filter = ("category", "is_active")
 @admin.register(Appointment)
 class AppointmentAdmin(admin.ModelAdmin):
     list_display = ("id", "service", "date", "time", "status", "payment_status", "price", "workspace")

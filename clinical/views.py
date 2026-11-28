@@ -1,23 +1,24 @@
 import json
 import logging
 import re
+import uuid
 from django.conf import settings
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, Http404
 from django.shortcuts import render, redirect
 from django.contrib.auth import login, logout
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.cache import cache
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
-from django.views.decorators.cache import never_cache
+from django.views.decorators.cache import cache_control, never_cache
 from django.db import IntegrityError, OperationalError, transaction
 from django.urls import reverse
 from django.utils.text import get_valid_filename
 from .demo import workspace, serialize, catalog, act, create_reservation, DemoError, profile
 from .document_store import delete_document, read_document, save_document
 from .flow import FlowError, confirm_payment, create_payment, validate_configuration
-from .forms import PatientRegistrationForm
-from .models import Applicant, ApplicantDocument, Appointment, ClinicalDocument, DemoWorkspace, UserProfile
+from .forms import PatientRegistrationForm, ServiceCreateForm, ServiceDeleteForm, ServiceUpdateForm
+from .models import Applicant, ApplicantDocument, Appointment, ClinicalDocument, DemoWorkspace, Service, UserProfile
 logger = logging.getLogger(__name__)
 MAX_DOCUMENT_SIZE = 10 * 1024 * 1024
 DOCUMENT_CATEGORIES = {label for value, label in ClinicalDocument.CATEGORIES}
@@ -37,14 +38,14 @@ def portal(request, role):
         p = profile(request.user)
         if role != p.role: return HttpResponse('No tienes permiso para acceder a este portal.', status=403)
         w = workspace(request)
-        return render(request, 'clinical/index.html', {'bootstrap': {'maps': {'key': settings.GOOGLE_MAPS_BROWSER_KEY, 'mapId': settings.GOOGLE_MAPS_MAP_ID} if p.role == 'paciente' else {}, 'services':catalog(), 'state':serialize(w, request.user), 'user': {'id':request.user.pk, 'role':p.role, 'admin_level':p.admin_level, 'name':request.user.get_full_name(), 'email':request.user.email, 'username':request.user.username, 'date_of_birth':p.date_of_birth.isoformat() if p.date_of_birth else '', 'phone':p.phone, 'address':p.address, 'city':p.city, 'is_staff':request.user.is_staff}}})
+        return render(request, 'clinical/index.html', {'bootstrap': {'maps': {'key': settings.GOOGLE_MAPS_BROWSER_KEY, 'mapId': settings.GOOGLE_MAPS_MAP_ID} if p.role == 'paciente' else {}, 'services':catalog(include_inactive=True), 'state':serialize(w, request.user), 'user': {'id':request.user.pk, 'role':p.role, 'admin_level':p.admin_level, 'name':request.user.get_full_name(), 'email':request.user.email, 'username':request.user.username, 'date_of_birth':p.date_of_birth.isoformat() if p.date_of_birth else '', 'phone':p.phone, 'address':p.address, 'city':p.city, 'is_staff':request.user.is_staff}}})
     except DemoError as e:
         return HttpResponse(e.message, status=e.status, content_type='text/plain; charset=utf-8')
 
 @never_cache
 @require_GET
 def state_view(request):
-    try: return JsonResponse({'state':serialize(workspace(request), request.user), 'services':catalog()})
+    try: return JsonResponse({'state':serialize(workspace(request), request.user), 'services':catalog(include_inactive=True)})
     except DemoError as e: return JsonResponse({'error':e.message},status=e.status)
 
 @never_cache
@@ -444,3 +445,133 @@ def register_view(request):
 def logout_view(request):
     logout(request)
     return redirect('inicio')
+
+
+@never_cache
+@require_POST
+def service_update_view(request, service_id):
+    try:
+        if profile(request.user).role != "admin":
+            raise DemoError("Solo administración puede modificar los servicios.", 403)
+        if request.content_type != "multipart/form-data":
+            raise DemoError("Se requiere un formulario con los datos del servicio.", 415)
+        if not Service.objects.filter(pk=service_id, is_active=True).exists():
+            raise DemoError("Servicio no encontrado.", 404)
+        form = ServiceUpdateForm(request.POST, request.FILES)
+        if not form.is_valid():
+            return JsonResponse({
+                "error": "Revisa los datos del servicio.",
+                "errors": dict(form.errors),
+            }, status=400)
+
+        data = form.cleaned_data
+        updates = {"price": data["price"], "revision": uuid.uuid4()}
+        if "name" in request.POST:
+            updates["name"] = data["name"]
+        if data["remove_image"]:
+            updates.update(image_data=b"", image_content_type="")
+        elif data["image"]:
+            updates.update(image_data=data["image"][0], image_content_type=data["image"][1])
+        # La revisión evita sobrescribir una edición realizada desde otra sesión.
+        updated = Service.objects.filter(pk=service_id, revision=data["revision"], is_active=True).update(**updates)
+        if not updated:
+            return JsonResponse({
+                "error": "El servicio cambió en otra sesión. Carga la última versión antes de editar.",
+                "services": catalog(include_inactive=True),
+            }, status=409)
+        return JsonResponse({"services": catalog(include_inactive=True)})
+    except DemoError as error:
+        return JsonResponse({"error": error.message}, status=error.status)
+    except OperationalError:
+        logger.exception("No se pudo actualizar el servicio")
+        return JsonResponse({"error": "No se pudo guardar el servicio. Intenta nuevamente."}, status=503)
+
+
+@cache_control(public=True, max_age=3600)
+@require_GET
+def service_image_view(request, service_id, revision):
+    service = Service.objects.filter(pk=service_id, revision=revision).only(
+        "image_data", "image_content_type",
+    ).first()
+    if not service or not service.image_data:
+        raise Http404("Imagen no encontrada.")
+    response = HttpResponse(bytes(service.image_data), content_type=service.image_content_type)
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@never_cache
+@require_POST
+def service_create_view(request):
+    try:
+        if profile(request.user).role != "admin":
+            raise DemoError("Solo administración puede crear servicios.", 403)
+        if request.content_type != "multipart/form-data":
+            raise DemoError("Se requiere un formulario con los datos del servicio.", 415)
+        form = ServiceCreateForm(request.POST, request.FILES)
+        if not form.is_valid():
+            return JsonResponse({
+                "error": "Revisa los datos del servicio.",
+                "errors": dict(form.errors),
+            }, status=400)
+
+        data = form.cleaned_data
+        values = {
+            "name": data["name"], "category": data["category"],
+            "description": data["description"], "duration": data["duration"],
+            "price": data["price"], "code": "GC-" + uuid.uuid4().hex[:16].upper(),
+        }
+        if data["image"]:
+            values.update(image_data=data["image"][0], image_content_type=data["image"][1])
+        # Una misma solicitud conserva su clave al reintentar tras un corte de conexión.
+        service, created = Service.objects.get_or_create(
+            creation_key=data["creation_key"], defaults=values,
+        )
+        if not service.is_active:
+            raise DemoError("Este servicio ya fue eliminado. Abre un formulario nuevo para crear otro.", 409)
+        return JsonResponse({
+            "services": catalog(include_inactive=True), "service_id": service.pk,
+        }, status=201 if created else 200)
+    except DemoError as error:
+        return JsonResponse({"error": error.message}, status=error.status)
+    except IntegrityError:
+        return JsonResponse({"error": "No se pudo crear el servicio. Intenta nuevamente."}, status=409)
+    except OperationalError:
+        logger.exception("No se pudo crear el servicio")
+        return JsonResponse({"error": "No se pudo guardar el servicio. Intenta nuevamente."}, status=503)
+
+
+@never_cache
+@require_POST
+def service_delete_view(request, service_id):
+    try:
+        if profile(request.user).role != "admin":
+            raise DemoError("Solo administración puede eliminar servicios.", 403)
+        if request.content_type not in {"multipart/form-data", "application/x-www-form-urlencoded"}:
+            raise DemoError("Se requiere un formulario con los datos del servicio.", 415)
+        form = ServiceDeleteForm(request.POST)
+        if not form.is_valid():
+            return JsonResponse({
+                "error": "Revisa los datos del servicio.",
+                "errors": dict(form.errors),
+            }, status=400)
+        service = Service.objects.filter(pk=service_id).only("is_active").first()
+        if not service:
+            raise DemoError("Servicio no encontrado.", 404)
+        if service.is_active:
+            updated = Service.objects.filter(
+                pk=service_id, revision=form.cleaned_data["revision"], is_active=True,
+            ).update(is_active=False, revision=uuid.uuid4())
+            if not updated:
+                return JsonResponse({
+                    "error": "El servicio cambió en otra sesión. Revisa la última versión antes de eliminarlo.",
+                    "services": catalog(include_inactive=True),
+                }, status=409)
+        return JsonResponse({
+            "services": catalog(include_inactive=True), "deleted_id": service_id,
+        })
+    except DemoError as error:
+        return JsonResponse({"error": error.message}, status=error.status)
+    except OperationalError:
+        logger.exception("No se pudo eliminar el servicio")
+        return JsonResponse({"error": "No se pudo eliminar el servicio. Intenta nuevamente."}, status=503)

@@ -1,3 +1,6 @@
+from io import BytesIO
+
+from PIL import Image, ImageOps, UnidentifiedImageError
 from django import forms
 from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import UserCreationForm
@@ -53,3 +56,65 @@ class PatientRegistrationForm(UserCreationForm):
         if date_of_birth > timezone.localdate():
             raise ValidationError("La fecha de nacimiento no puede ser futura.")
         return date_of_birth
+
+
+class ServiceUpdateForm(forms.Form):
+    name = forms.CharField(label="Nombre", max_length=100, required=False)
+    price = forms.IntegerField(label="Precio en CLP", min_value=1, max_value=2147483647)
+    revision = forms.UUIDField()
+    image = forms.FileField(label="Imagen", required=False)
+    remove_image = forms.BooleanField(required=False)
+
+    def clean_name(self):
+        name = self.cleaned_data["name"]
+        if "name" in self.data and not name:
+            raise ValidationError("Escribe el nombre del servicio.")
+        return name
+
+    def clean_image(self):
+        uploaded = self.cleaned_data.get("image")
+        if not uploaded:
+            return None
+        if uploaded.size > 5 * 1024 * 1024:
+            raise ValidationError("La imagen debe pesar como máximo 5 MiB.")
+        try:
+            with Image.open(uploaded) as original:
+                if original.format not in {"JPEG", "PNG", "WEBP"}:
+                    raise ValidationError("Selecciona una imagen JPG, PNG o WebP.")
+                if original.width * original.height > 16_000_000:
+                    raise ValidationError("La imagen debe tener como máximo 16 megapíxeles.")
+                image = ImageOps.exif_transpose(original)
+                image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+                has_alpha = "A" in image.getbands() or "transparency" in image.info
+                image = image.convert("RGBA" if has_alpha else "RGB")
+                image.info.clear()
+                output = BytesIO()
+                if has_alpha:
+                    image.save(output, format="PNG")
+                    content_type = "image/png"
+                else:
+                    image.save(output, format="JPEG", quality=85)
+                    content_type = "image/jpeg"
+                return output.getvalue(), content_type
+        except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as error:
+            raise ValidationError("El archivo no contiene una imagen válida o está dañado.") from error
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("image") and cleaned.get("remove_image"):
+            raise ValidationError("Elige una imagen nueva o marca quitar imagen.")
+        return cleaned
+
+
+class ServiceCreateForm(ServiceUpdateForm):
+    name = forms.CharField(label="Nombre", max_length=100)
+    category = forms.CharField(label="Categoría", max_length=50)
+    description = forms.CharField(label="Descripción", max_length=250)
+    duration = forms.IntegerField(label="Duración en minutos", min_value=1, max_value=2147483647)
+    creation_key = forms.UUIDField()
+    revision = None
+    remove_image = None
+
+
+class ServiceDeleteForm(forms.Form):
+    revision = forms.UUIDField()
