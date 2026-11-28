@@ -62,6 +62,10 @@ Las cuentas comparten los registros de un mismo espacio de demostración: una re
 
 ### Administrador
 
+- Crear servicios indicando nombre, categoría, descripción, duración y precio.
+- Editar nombres y precios en CLP, y subir, reemplazar o quitar imágenes desde **Servicios**.
+- Eliminar un servicio del catálogo con confirmación, conservando sus atenciones y pagos anteriores.
+
 - Consultar resumen, tablas de solicitudes y gráficos calculados desde SQLite.
 - Ver cuentas y pacientes del espacio de demostración.
 - Revisar postulaciones vinculadas a pacientes y descargar sus documentos dentro del espacio.
@@ -470,3 +474,37 @@ Usa `GOOGLE_MAPS_MAP_ID` si tienes un ID de mapa de tipo JavaScript. Por defecto
 Las reservas ficticias apuntan a Plaza de Armas o Cerro Santa Lucía, en Santiago. Para usar otro destino en una visita, configura su latitud y longitud desde **Panel Django → Atenciones de demostración**. Una visita sin coordenadas de destino reconocidas puede mostrar la posición del profesional, con la estimación de llegada como no disponible.
 
 Para probar desde un teléfono, usa **HTTPS** y asegúrate de que ambas sesiones accedan al mismo servidor. Mantén la página del profesional abierta en primer plano. GoClinical deja de mostrar posiciones de más de 45 segundos. Solo guarda el último punto de cada visita activa, lo elimina al dejar de compartir o iniciar la atención y descarta puntos vencidos al consultar el seguimiento. El cálculo envía a Google las coordenadas de origen y destino. Usa las cuentas y destinos ficticios para esta demostración.
+
+
+## Administrar los servicios
+
+1. Inicia sesión con una cuenta de administrador o superadministrador.
+2. Abre **Servicios** en el menú lateral.
+3. Para crear uno, pulsa **Agregar servicio** y completa nombre, categoría, descripción, duración en minutos y precio en pesos chilenos. La imagen es opcional y el código se genera automáticamente. Puedes escribir una categoría nueva y luego filtrarla en el catálogo.
+4. Para modificar un servicio, pulsa **Editar servicio**, cambia el nombre o precio y selecciona una imagen JPG, PNG o WebP de hasta 5 MiB y 16 megapíxeles. Puedes revisar su vista previa y quitar una imagen existente.
+5. Para retirarlo, pulsa **Eliminar** y confirma. Se marca como inactivo en la base de datos y desaparece del catálogo público, de los portales y de las opciones para nuevas reservas. Sus atenciones y pagos anteriores quedan disponibles en el historial.
+6. Recarga el sitio público o el catálogo de otra sesión para ver los cambios.
+
+Los precios deben ser enteros mayores que cero. Las nuevas reservas usan el precio vigente del catálogo. El monto registrado en una reserva anterior se conserva. El catálogo es compartido por los perfiles del proyecto.
+
+Las imágenes de los servicios se guardan junto al servicio en la base relacional configurada (SQLite o PostgreSQL). Se ajustan a un máximo de 1600 × 1600 píxeles, conservando sus proporciones, y se publican mediante una ruta de Django. Esta función utiliza la dependencia Pillow incluida en requirements.txt. Si dos administradores editan el mismo servicio, la segunda edición debe cargar la última versión antes de guardar.
+
+### Actualizar una instalación existente
+
+Respalda tu base de datos y copia los archivos actualizados a la carpeta del proyecto. Desde la terminal que utilizas habitualmente ejecuta:
+
+```powershell
+py -m pip install -r requirements.txt
+py manage.py migrate
+py manage.py runserver
+```
+
+Si usas el entorno virtual del proyecto, sustituye `py` por `.\.venv\Scripts\python.exe`. La migración `0011` incorpora los campos de imagen y revisión. La migración `0012` agrega el estado del catálogo y una clave para evitar duplicados al reintentar una creación. Ambas se aplican sobre la base indicada en `DATABASE_URL`. Conserva tu archivo `.env` con la conexión de Neon al actualizar el código.
+
+### Verificación de esta entrega
+
+`py manage.py test clinical.test_services` ejecuta 17 pruebas de creación, edición, eliminación, acceso por rol, CSRF, imágenes, reintentos, ediciones concurrentes, catálogo vacío y precios históricos. Para ejecutar la batería previa y la nueva usa `py manage.py test clinical.tests clinical.test_services`.
+
+La prueba previa `test_registration_rejects_duplicate_email_case_insensitively` falla también en el ZIP original porque presupone un correo que no está entre las cuentas preparadas por `preparar_demo`. La validación de correos se conserva en el formulario de registro.
+
+El formulario también se verificó con un DOM simulado, cubriendo navegación, vista previa, creación, categorías nuevas, edición del nombre, guardado, conflicto de edición, confirmación y cancelación de eliminación, catálogo vacío e historial. La revisión visual en un navegador quedó pendiente porque Chromium no está disponible en el entorno de verificación.

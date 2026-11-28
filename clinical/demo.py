@@ -15,10 +15,12 @@ class DemoError(Exception):
     def __init__(self, message, status=400): self.message, self.status = message, status
 
 def seed_workspace(w):
-    services = list(Service.objects.order_by('id'))
-    if len(services) < 4: raise DemoError('Falta el catálogo. Ejecuta python manage.py seed_demo.', 503)
+    services = list(Service.objects.defer('image_data').filter(is_active=True).order_by('id'))
     today = timezone.localdate()
-    for s, delta, hour, status in [(services[0],2,'10:00','Confirmada'),(services[3],-3,'11:30','Finalizada')]:
+    examples = []
+    if services:
+        examples = [(services[0],2,'10:00','Confirmada'),(services[min(3, len(services)-1)],-3,'11:30','Finalizada')]
+    for s, delta, hour, status in examples:
         Appointment.objects.create(workspace=w, service=s, date=today+timedelta(days=delta), time=hour, status=status, address=ADDRESSES[0], price=s.price, duration=s.duration, paid=True, payment_status='paid')
     Availability.objects.bulk_create([Availability(workspace=w,weekday='Lunes',start='09:00',end='13:00'), Availability(workspace=w,weekday='Miércoles',start='14:00',end='18:00')])
 
@@ -86,8 +88,26 @@ def serialize(w, user):
       'accounts':accounts,
     }
 
-def catalog():
-    return [{'id':s.pk,'name':s.name,'category':s.category,'icon':s.icon,'price':s.price,'time':f'{s.duration} min','code':s.code,'desc':s.description} for s in Service.objects.all()]
+def catalog(include_inactive=False):
+    services = Service.objects.defer('image_data')
+    if not include_inactive:
+        services = services.filter(is_active=True)
+    return [{
+        'id': service.pk,
+        'name': service.name,
+        'is_active': service.is_active,
+        'duration': service.duration,
+        'category': service.category,
+        'icon': service.icon,
+        'price': service.price,
+        'price_label': f"${service.price:,} CLP".replace(",", "."),
+        'time': f'{service.duration} min',
+        'code': service.code,
+        'desc': service.description,
+        'image_url': service.image_url,
+        'revision': str(service.revision),
+    } for service in services]
+
 
 def appointment(w, code, user):
     if not isinstance(code,str) or not code.startswith('GC-') or not code[3:].isdigit(): raise DemoError('Atención no encontrada.',404)
@@ -112,7 +132,7 @@ def create_reservation(w, payload, user):
         if old.status == 'Cancelada': raise DemoError('Esta reserva ya fue cancelada.',409)
         return old
     if payload.get('accepted') is not True: raise DemoError('Debes aceptar las condiciones antes de continuar.')
-    s = Service.objects.filter(pk=integer(payload.get('service'))).first()
+    s = Service.objects.select_for_update().defer('image_data').filter(pk=integer(payload.get('service')), is_active=True).first()
     if not s: raise DemoError('Servicio no disponible.')
     try: day = date.fromisoformat(str(payload.get('date')))
     except ValueError: raise DemoError('Fecha inválida.')

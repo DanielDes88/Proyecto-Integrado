@@ -6,7 +6,7 @@ const day=n=>{const d=new Date();d.setDate(d.getDate()+n);return `${d.getFullYea
 let state=bootstrap.state;
 const currentUser=bootstrap.user;
 const role=currentUser.role;
-let page='inicio',sub='',search='',category='Todas';const modal=$('#modal');
+let page='inicio',sub='',search='',category='';const modal=$('#modal');
 let documents=[],documentsLoaded=false,documentsLoading=false,documentsError='';
 let selectedDocumentFile=null;
 let filePickerOpen=false;
@@ -15,22 +15,67 @@ const badge=s=>`<span class="badge ${s==='Cancelada'||s==='Rechazado'||s==='Pago
 function toast(t){$('#toast').textContent=t;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),3500)}
 function heading(eyebrow,title,desc,action=''){return `<div class="intro"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${desc}</p></div>${action}</div>`}
 const stat=(icon,n,label)=>`<div class="stat"><div class="symbol">${icon}</div><div><strong>${n}</strong><small>${label}</small></div></div>`;
-const bookButton=`<button class="button" data-action="reserve" data-id="${services[0]?.id || 1}">Agendar atención <span>＋</span></button>`;
-function serviceCard(s){return `<article class="card"><div class="serviceicon">${esc(s.icon)}</div><div class="meta"><span>${esc(s.category)}</span><span>${esc(s.time)}</span></div><h3>${esc(s.name)}</h3><p>${esc(s.desc)}</p><div class="cardend"><span class="price">${money(s.price)} <small>CLP</small></span>${role==='paciente'?`<button class="button secondary" data-action="reserve" data-id="${s.id}">Agendar ↗</button>`:`<a class="textbtn" href="#disponibilidad">Ver horarios →</a>`}</div></article>`}
+function activeServices() {
+    return services.filter(service => service.is_active !== false);
+}
+
+function serviceCategories() {
+    return [...new Set(activeServices().map(service => service.category))]
+        .sort((left, right) => left.localeCompare(right, 'es'));
+}
+
+function bookButton() {
+    const service = activeServices()[0];
+    return service
+        ? `<button class="button" data-action="reserve" data-id="${service.id}">Agendar atención <span>＋</span></button>`
+        : '';
+}
+
+function serviceCard(service) {
+ const visual = service.image_url
+  ? `<img class="service-photo" src="${esc(service.image_url)}" alt="${esc(service.name)}" loading="lazy">`
+  : `<div class="serviceicon" aria-hidden="true">${esc(service.icon)}</div>`;
+ let action = '';
+ if (role === 'paciente') action = `<button class="button secondary" data-action="reserve" data-id="${service.id}">Agendar ↗</button>`;
+ else if (role === 'admin') action = `<div class="service-card-actions"><button class="button secondary" data-action="editService" data-id="${service.id}">Editar servicio</button><button class="textbtn service-delete-button" data-action="deleteService" data-id="${service.id}">Eliminar</button></div>`;
+ else action = '<a class="textbtn" href="#disponibilidad">Ver horarios →</a>';
+ return `<article class="card service-card" data-service-id="${service.id}">${visual}<div class="meta"><span>${esc(service.category)}</span><span>${esc(service.time)}</span></div><h3>${esc(service.name)}</h3><p>${esc(service.desc)}</p><div class="cardend"><span class="price">${money(service.price)} <small>CLP</small></span>${action}</div></article>`;
+}
 const art=`<div class="heroart" aria-hidden="true"><svg viewBox="0 0 430 340" xmlns="http://www.w3.org/2000/svg"><circle cx="232" cy="169" r="132" fill="#eaf1e1"/><path d="M340 240V118L253 60l-89 58v122" fill="#bdcfb6"/><path d="M151 122 253 50 355 122" fill="none" stroke="#96b492" stroke-width="10" stroke-linecap="round"/><rect x="240" y="125" width="40" height="43" rx="5" fill="#f8faf0"/><path d="M260 125v43m-20-22h40" stroke="#bccdb3" stroke-width="4"/><path d="M52 294c7-36 3-72-12-99 38 5 47 44 38 77 12-37 15-68 41-87 8 55-12 84-39 109" fill="#81a889"/><path d="M111 272v-63c0-30 17-49 43-49s47 18 47 49v63" fill="#187d70"/><ellipse cx="156" cy="126" rx="29" ry="36" fill="#dcad90"/><path d="M127 123c-8-31 14-46 36-38 23 2 30 25 19 45-3-20-18-17-29-32-2 14-12 20-26 25" fill="#354b40"/><path d="M151 165v45m-19-15h38" stroke="#fff" stroke-width="6" stroke-linecap="round"/><path d="m190 209 44 19 31-17" fill="none" stroke="#d6a388" stroke-width="16" stroke-linecap="round"/><path d="M234 280v-43c0-29 15-42 38-42 22 0 40 17 40 42v43" fill="#e6c999"/><ellipse cx="272" cy="163" rx="28" ry="33" fill="#e2b193"/><path d="M244 165c-14-38 27-58 48-25l7 26-15-12-11-21c-6 18-19 19-29 20" fill="#8d9b88"/><path d="M310 238v53m-57 0h79" stroke="#56795c" stroke-width="9" stroke-linecap="round"/></svg><div class="artlabel"><span class="circlecheck">✓</span><div><strong>El cuidado comienza cerca de ti</strong><span>Coordina tu próxima visita en un solo lugar.</span></div></div></div>`;
-function home(){return heading('BIENVENIDO A GOCLINICAL','Tu salud, más cerca.','Un espacio para cuidar de ti y de quienes más quieres.')+`<section class="hero"><div class="herotext"><div class="eyebrow">CUIDADOS EN TU HOGAR</div><h2>Atención profesional.<br>La tranquilidad de estar en casa.</h2><p>Encuentra un servicio, agenda tu visita y sigue cada paso de tu atención.</p><a href="#servicios" class="button">Explorar servicios <span>↗</span></a></div>${art}</section><div class="stats">${stat('✚','6','Servicios de demostración')}${stat('◷','3 pasos','Para agendar una visita')}${stat('♡','3 perfiles','Conectados en un lugar')}</div><div class="sectionhead"><h2>¿Cómo podemos ayudarte?</h2><a href="#servicios">Ver todos los servicios →</a></div><div class="grid3">${services.slice(0,3).map(serviceCard).join('')}</div><div class="two"><section><div class="sectionhead"><h2>Así de simple</h2></div><div class="card">${[['Elige tu servicio','Consulta el catálogo y los valores de ejemplo.'],['Agenda tu visita','Selecciona fecha y horario y simula el pago.'],['Acompaña cada paso','Revisa tu atención desde el portal del paciente.']].map((x,i)=>`<div class="steps"><span>0${i+1}</span><div><b>${x[0]}</b><p>${x[1]}</p></div></div>`).join('')}</div></section><section><div class="sectionhead"><h2>Explora el proyecto</h2></div><div class="card softcard"><div class="serviceicon">◫</div><h3>Tres miradas, una misma atención.</h3><p>Cambia de pestaña para conocer la experiencia del paciente, del profesional y de administración.</p><a href="#paciente" class="textbtn">Ir al portal del paciente →</a></div></section></div>`}
-function catalog(){return heading('CATÁLOGO','El cuidado que necesitas.','Servicios y precios referenciales para esta demostración.')+`<div class="filters"><input aria-label="Buscar servicios" id="search" placeholder="Buscar un servicio…" value="${esc(search)}"><select aria-label="Filtrar por categoría" id="category">${['Todas','Enfermería','Exámenes','Controles','Rehabilitación'].map(c=>`<option ${category===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="grid3" id="catalogResults">${filteredServices()}</div>`}
-function filteredServices(){const list=services.filter(s=>(category==='Todas'||s.category===category)&&(s.name+' '+s.category).toLocaleLowerCase('es').normalize('NFD').replace(/[\u0300-\u036f]/g,'').includes(search.toLocaleLowerCase('es').normalize('NFD').replace(/[\u0300-\u036f]/g,'')));return list.length?list.map(serviceCard).join(''):'<div class="empty">No encontramos servicios. Prueba otra búsqueda.</div>'}
+function home(){return heading('BIENVENIDO A GOCLINICAL','Tu salud, más cerca.','Un espacio para cuidar de ti y de quienes más quieres.')+`<section class="hero"><div class="herotext"><div class="eyebrow">CUIDADOS EN TU HOGAR</div><h2>Atención profesional.<br>La tranquilidad de estar en casa.</h2><p>Encuentra un servicio, agenda tu visita y sigue cada paso de tu atención.</p><a href="#servicios" class="button">Explorar servicios <span>↗</span></a></div>${art}</section><div class="stats">${stat('✚',activeServices().length,'Servicios disponibles')}${stat('◷','3 pasos','Para agendar una visita')}${stat('♡','3 perfiles','Conectados en un lugar')}</div><div class="sectionhead"><h2>¿Cómo podemos ayudarte?</h2><a href="#servicios">Ver todos los servicios →</a></div><div class="grid3">${activeServices().slice(0,3).map(serviceCard).join('')}</div><div class="two"><section><div class="sectionhead"><h2>Así de simple</h2></div><div class="card">${[['Elige tu servicio','Consulta el catálogo y los valores de ejemplo.'],['Agenda tu visita','Selecciona fecha y horario y simula el pago.'],['Acompaña cada paso','Revisa tu atención desde el portal del paciente.']].map((x,i)=>`<div class="steps"><span>0${i+1}</span><div><b>${x[0]}</b><p>${x[1]}</p></div></div>`).join('')}</div></section><section><div class="sectionhead"><h2>Explora el proyecto</h2></div><div class="card softcard"><div class="serviceicon">◫</div><h3>Tres miradas, una misma atención.</h3><p>Cambia de pestaña para conocer la experiencia del paciente, del profesional y de administración.</p><a href="#paciente" class="textbtn">Ir al portal del paciente →</a></div></section></div>`}
+function catalog() {
+    const categories = serviceCategories();
+    if (!categories.includes(category)) category = '';
+    const addButton = '<button class="button" data-action="newService">Agregar servicio</button>';
+    const intro = role === 'admin'
+        ? heading('ADMINISTRACIÓN', 'Servicios', 'Administra las prestaciones disponibles en GoClinical.', addButton)
+        : heading('CATÁLOGO', 'El cuidado que necesitas.', 'Servicios y precios referenciales para esta demostración.');
+    return intro + `<div class="filters"><input aria-label="Buscar servicios" id="search" placeholder="Buscar un servicio…" value="${esc(search)}"><select aria-label="Filtrar por categoría" id="category"><option value="">Todas</option>${categories.map(value=>`<option value="${esc(value)}" ${category===value?'selected':''}>${esc(value)}</option>`).join('')}</select></div><div class="grid3" id="catalogResults">${filteredServices()}</div>`;
+}
+
+function filteredServices() {
+    const available = activeServices();
+    const normalize = value => value.toLocaleLowerCase('es').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const list = available.filter(service =>
+        (!category || service.category === category)
+        && normalize(service.name + ' ' + service.category).includes(normalize(search))
+    );
+    if (list.length) return list.map(serviceCard).join('');
+    return available.length
+        ? '<div class="empty">No encontramos servicios. Prueba otra búsqueda.</div>'
+        : '<div class="empty">No hay servicios disponibles en este momento.</div>';
+}
+
 function tabs(items){return `<div class="tabs" role="tablist" aria-label="Secciones del portal">${items.map(([id,title])=>`<button role="tab" aria-selected="${sub===id}" class="${sub===id?'selected':''}" data-action="sub" data-sub="${id}">${title}</button>`).join('')}</div>`}
 function appointment(a,pro=false){const s=services.find(s=>s.id===a.service),payment=a.paid?'Pago confirmado':a.payment_status==='rejected'?'Pago rechazado':a.payment_status==='cancelled'?'Pago cancelado':'Pago pendiente',review=role==='paciente'?state.reviews.find(r=>r.appointment===a.id):null,notice=role==='paciente'&&a.patient_notice?`<p class="review-comment-help"><strong>Importante:</strong> ${esc(a.patient_notice)}</p>`:'';return `<article class="appointment"><div class="datebox">${dateLabel(a.date)}</div><div style="flex:1"><h3>${esc(s.name)}</h3><p>${dateLabel(a.date)} · ${a.time} h · ${esc(pro?a.patient:a.professional)}</p><p style="margin-top:7px">${a.id} &nbsp; ${badge(a.status)} ${badge(payment)}</p>${notice}${review?`<p class="review-comment-help"><strong>Tu evaluación enviada:</strong> ${'★'.repeat(review.rating)}${'☆'.repeat(5-review.rating)} · ${esc(review.comment)} · Pendiente de aprobación.</p>`:''}</div><div class="actions"><button class="button secondary" data-action="detail" data-id="${a.id}">Ver detalle</button>${pro&&a.paid&&a.status==='En camino'?`<button class="button secondary" type="button" data-share-trip="${a.id}">Compartir ubicación</button>`:''}${pro&&a.paid&&['Confirmada','En camino','En atención'].includes(a.status)?`<button class="button" data-action="advance" data-id="${a.id}">${a.status==='Confirmada'?'En camino':a.status==='En camino'?'Iniciar atención':'Finalizar'}</button>`:''}${role==='paciente'&&!pro&&a.status==='Confirmada'?`<button class="textbtn" data-action="cancel" data-id="${a.id}">Cancelar</button>`:''}${role==='paciente'&&!pro&&a.status==='Finalizada'&&!review?`<button class="button" data-action="review" data-id="${a.id}">Evaluar</button>`:''}</div></article>`}
-function patient(){let content='';if(sub==='perfil')content=`<div class="card"><div class="profilehead"><span class="avatar">CT</span><div><h2>Camila Torres</h2><p class="muted">Paciente de demostración</p></div></div><div class="summary"><div><span>Correo ficticio</span><b>camila@example.invalid</b></div><div><span>Dirección</span><b>Domicilio de demostración</b></div></div><p class="muted">Este perfil es ficticio. No necesitas ingresar información personal para explorar el prototipo.</p></div>`;else{const list=state.appointments.filter(a=>sub==='historial'?['Finalizada','Cancelada'].includes(a.status):!['Finalizada','Cancelada'].includes(a.status));content=list.length?list.map(a=>appointment(a)).join(''):'<div class="empty">No tienes atenciones en esta sección.<br><a class="textbtn" href="#servicios">Explorar servicios →</a></div>'}return heading('PORTAL DEL PACIENTE','Hola, '+esc(currentUser.name.split(' ')[0])+'.','Tus cuidados y próximas visitas, en un solo lugar.',bookButton)+`<div class="stats">${stat('◷',state.appointments.filter(a=>!['Finalizada','Cancelada'].includes(a.status)).length,'Próximas atenciones')}${stat('✓',state.appointments.filter(a=>a.status==='Finalizada').length,'Atenciones finalizadas')}${stat('♡',state.reviews.length,'Evaluaciones enviadas')}</div>`+tabs([['proximas','Próximas atenciones'],['historial','Historial']])+content}
+function patient(){let content='';if(sub==='perfil')content=`<div class="card"><div class="profilehead"><span class="avatar">CT</span><div><h2>Camila Torres</h2><p class="muted">Paciente de demostración</p></div></div><div class="summary"><div><span>Correo ficticio</span><b>camila@example.invalid</b></div><div><span>Dirección</span><b>Domicilio de demostración</b></div></div><p class="muted">Este perfil es ficticio. No necesitas ingresar información personal para explorar el prototipo.</p></div>`;else{const list=state.appointments.filter(a=>sub==='historial'?['Finalizada','Cancelada'].includes(a.status):!['Finalizada','Cancelada'].includes(a.status));content=list.length?list.map(a=>appointment(a)).join(''):'<div class="empty">No tienes atenciones en esta sección.<br><a class="textbtn" href="#servicios">Explorar servicios →</a></div>'}return heading('PORTAL DEL PACIENTE','Hola, '+esc(currentUser.name.split(' ')[0])+'.','Tus cuidados y próximas visitas, en un solo lugar.',bookButton())+`<div class="stats">${stat('◷',state.appointments.filter(a=>!['Finalizada','Cancelada'].includes(a.status)).length,'Próximas atenciones')}${stat('✓',state.appointments.filter(a=>a.status==='Finalizada').length,'Atenciones finalizadas')}${stat('♡',state.reviews.length,'Evaluaciones enviadas')}</div>`+tabs([['proximas','Próximas atenciones'],['historial','Historial']])+content}
 function professional(){let content='';if(sub==='agenda')content=state.appointments.filter(a=>a.status!=='Cancelada').map(a=>appointment(a,true)).join('')||'<div class="empty">No hay atenciones asignadas.</div>';if(sub==='disponibilidad')content=`<div class="two"><div class="card"><h2>Mi disponibilidad</h2><p class="muted">Bloques de ejemplo para recibir visitas.</p>${state.slots.map((s,i)=>`<div class="appointment"><span>${esc(s.label)}</span><button class="textbtn" data-action="removeSlot" data-id="${s.id}">Quitar</button></div>`).join('')||'<p>No hay bloques disponibles.</p>'}</div><form id="slotForm" class="card"><h2>Agregar un bloque</h2><label for="weekday">Día</label><select id="weekday" name="weekday">${['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'].map(x=>`<option>${x}</option>`).join('')}</select><div class="formrow"><div><label for="from">Desde</label><input id="from" name="from" type="time" required value="09:00"></div><div><label for="to">Hasta</label><input id="to" name="to" type="time" required value="13:00"></div></div><div class="modalfoot"><button class="button">Guardar disponibilidad</button></div></form></div>`;if(sub==='honorarios'){const done=state.appointments.filter(a=>a.status==='Finalizada');const total=done.reduce((n,a)=>n+Math.round(a.price*.7),0);content=`<div class="notice">Cálculo ilustrativo: 70 % del precio por atención finalizada. No representa un acuerdo real de honorarios.</div><div class="two"><div class="card"><div class="eyebrow">ACUMULADO DE DEMOSTRACIÓN</div><h1>${money(total)}</h1><p>${done.length} atenciones finalizadas · Pago pendiente</p><button class="button" data-action="bill" ${state.bill?'disabled':''}>${state.bill?'Boleta de ejemplo enviada ✓':'Simular envío de boleta'}</button><p style="margin-top:16px">Se utiliza un documento ficticio. No se cargan archivos personales.</p></div><div class="card"><h2>Detalle de honorarios</h2>${done.map(a=>`<div class="summary"><div><span>${a.id}</span><b>${money(a.price*.7)}</b></div></div>`).join('')||'<p>No hay atenciones finalizadas.</p>'}</div></div>`}return heading('PORTAL PROFESIONAL','Hola, '+esc(currentUser.name.split(' ')[0])+'.','Organiza tus visitas y acompaña cada atención.')+tabs([['agenda','Mis atenciones'],['disponibilidad','Disponibilidad'],['honorarios','Honorarios']])+content}
 function admin(){let content='';if(sub==='resumen')content=`<div class="stats">${stat('◷',state.applicants.filter(a=>a.status==='Pendiente').length,'Postulaciones pendientes')}${stat('✚',state.appointments.length,'Atenciones registradas')}${stat('▤',state.bills.length,'Boletas recibidas')}</div><div class="sectionhead"><h2>Actividad de atenciones</h2></div><div class="tablewrap"><table><thead><tr><th>ATENCIÓN</th><th>SERVICIO</th><th>FECHA</th><th>ESTADO</th><th>PAGO SIMULADO</th></tr></thead><tbody>${state.appointments.map(a=>`<tr><td>${a.id}<small>${esc(a.patient)}</small></td><td>${esc(services.find(s=>s.id===a.service).name)}</td><td>${dateLabel(a.date)}</td><td>${badge(a.status)}</td><td>${a.status==='Cancelada'?'Revisión de devolución':money(a.price)}</td></tr>`).join('')}</tbody></table></div>`;if(sub==='postulaciones')content=`<div class="notice">Antecedentes ficticios. Aprobar habilita el estado del postulante dentro de esta demostración.</div>${state.applicants.map(a=>`<article class="appointment"><span class="avatar">${a.name.split(' ').map(n=>n[0]).join('')}</span><div style="flex:1"><h3>${esc(a.name)}</h3><p>${esc(a.area)} · ${esc(a.experience)} de experiencia · Movilización propia</p></div>${badge(a.status)}${a.status==='Pendiente'?`<div class="actions"><button class="button secondary" data-action="reject" data-id="${a.id}">Rechazar</button><button class="button" data-action="approve" data-id="${a.id}">Aprobar</button></div>`:''}</article>`).join('')}`;if(sub==='comentarios')content=state.reviews.length?state.reviews.map(r=>`<article class="appointment"><div style="flex:1"><h3>${'★'.repeat(r.rating)}${'☆'.repeat(5-r.rating)}</h3><p>${esc(r.comment)}</p><p>Paciente · ${r.appointment}</p></div>${badge(r.status)}${r.status==='Pendiente'?`<button class="button" data-action="publishReview" data-id="${r.id}">Aprobar comentario</button>`:''}</article>`).join(''):'<div class="empty">No hay comentarios por moderar.<br>Ve a Paciente → Historial y evalúa una atención finalizada.</div>';return heading('ADMINISTRACIÓN',page==='cuentas'?'Gestión de cuentas':'Comentarios y calificaciones',page==='cuentas'?'Revisa las solicitudes de incorporación y cuentas del prototipo.':'Modera las evaluaciones de las atenciones finalizadas.')+tabs([['resumen','Resumen'],['postulaciones','Postulaciones'],['comentarios','Comentarios']])+content}
 function render(focus=false){const titles={inicio:'Vista general',servicios:'Catálogo de servicios',paciente:'Portal / Paciente',profesional:'Portal / Profesional',admin:'Portal / Administración'};$('#breadcrumb').textContent=titles[page];document.querySelectorAll('nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===page);if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')});$('#main').innerHTML=({inicio:home,servicios:catalog,paciente:patient,profesional:professional,admin})[page]();if(focus)$('#main').focus({preventScroll:true})}
 function route(){let next=location.hash.slice(1)||'inicio';if(!['inicio','servicios','paciente','profesional','admin'].includes(next))next='inicio';page=next;sub=({paciente:'proximas',profesional:'agenda',admin:'resumen'})[page]||'';render();window.scrollTo(0,0)}
 function show(content){$('#dialogContent').innerHTML=content;if(!modal.open)modal.showModal();const h=modal.querySelector('h2');if(h){h.id='modalTitle';modal.setAttribute('aria-labelledby','modalTitle')}}
 const modalHead=title=>`<div class="modalhead"><h2>${title}</h2><button type="button" class="close" data-action="close" aria-label="Cerrar ventana">×</button></div>`;
-function reserve(id){show(modalHead('Agenda una atención')+`<p class="muted">1 de 2 · Elige tu servicio y horario.</p><form id="reserveForm"><label for="service">Servicio</label><select id="service" name="service">${services.map(s=>`<option value="${s.id}" ${s.id===id?'selected':''}>${esc(s.name)} · ${money(s.price)}</option>`).join('')}</select><div class="formrow"><div><label for="date">Fecha</label><input type="date" id="date" name="date" required min="${day(1)}" value="${day(1)}"></div><div><label for="time">Horario</label><select id="time" name="time">${['09:00','10:00','11:30','14:00','16:00'].map(t=>`<option>${t}</option>`).join('')}</select></div></div><label for="address">Dirección de ejemplo</label><select id="address" name="address"><option>Domicilio de demostración</option><option>Segundo domicilio de demostración</option></select><div class="notice" style="margin-top:20px">Esta es una simulación académica. No ingreses datos personales ni información médica.</div><label class="checklabel"><input name="consent" type="checkbox" required><span>Entiendo que esta reserva es ficticia y acepto continuar con la demostración.</span></label><div class="modalfoot"><button type="button" class="button secondary" data-action="close">Volver</button><button class="button">Revisar reserva →</button></div></form>`)}
+function reserve(id){if(!activeServices().some(service=>service.id===id)){toast('El servicio ya no está disponible. Revisa el catálogo.');return}show(modalHead('Agenda una atención')+`<p class="muted">1 de 2 · Elige tu servicio y horario.</p><form id="reserveForm"><label for="service">Servicio</label><select id="service" name="service">${activeServices().map(s=>`<option value="${s.id}" ${s.id===id?'selected':''}>${esc(s.name)} · ${money(s.price)}</option>`).join('')}</select><div class="formrow"><div><label for="date">Fecha</label><input type="date" id="date" name="date" required min="${day(1)}" value="${day(1)}"></div><div><label for="time">Horario</label><select id="time" name="time">${['09:00','10:00','11:30','14:00','16:00'].map(t=>`<option>${t}</option>`).join('')}</select></div></div><label for="address">Dirección de ejemplo</label><select id="address" name="address"><option>Domicilio de demostración</option><option>Segundo domicilio de demostración</option></select><div class="notice" style="margin-top:20px">Esta es una simulación académica. No ingreses datos personales ni información médica.</div><label class="checklabel"><input name="consent" type="checkbox" required><span>Entiendo que esta reserva es ficticia y acepto continuar con la demostración.</span></label><div class="modalfoot"><button type="button" class="button secondary" data-action="close">Volver</button><button class="button">Revisar reserva →</button></div></form>`)}
 let draft=null;
 function detail(id){const a=state.appointments.find(a=>a.id===id);if(!a)return;const s=services.find(s=>s.id===a.service),stages=['Confirmada','En camino','En atención','Finalizada'],payment=a.paid?'Confirmado por Flow':a.payment_status==='rejected'?'Rechazado por Flow':a.payment_status==='cancelled'?'Cancelado en Flow':'Pendiente de confirmación en Flow';show(modalHead('Detalle de atención')+`<p class="muted">${a.id} · ${esc(s.name)}</p>${badge(a.status)}<div class="timeline">${stages.map((x,i)=>`<span class="${i<=stages.indexOf(a.status)?'done':''}">${x}</span>`).join('')}</div><div class="summary"><div><span>Fecha</span><b>${dateLabel(a.date)} · ${a.time}</b></div><div><span>Dirección</span><b>${esc(a.address)}</b></div><div><span>Precio</span><b>${money(a.price)}</b></div><div><span>Pago</span><b>${esc(payment)}</b></div></div><p class="muted">${a.status==='Cancelada'?(a.paid?'La cancelación no inicia un reembolso automático en Flow; requiere revisión administrativa.':'La atención fue cancelada.'): (role==='profesional'?'Actualiza el estado desde tu agenda.':'El profesional asignado actualizará el estado de tu atención.')}</p><div class="modalfoot"><button class="button" data-action="close">Entendido</button></div>`)}
 let busy=false;
@@ -68,6 +113,9 @@ document.addEventListener('keydown',e=>{if(!(e.target instanceof Element))return
 document.addEventListener('click',e=>{if(e.target instanceof Element&&e.target.matches('#applicationCredential,#applicationCv'))filePickerOpen=true;const b=e.target.closest('[data-action]');if(!b||busy)return;const id=b.dataset.id;switch(b.dataset.action){
 case'sub':sub=b.dataset.sub;render();break;
 case'reserve':reserve(Number(id));break;
+case'editService':editService(Number(id));break;
+case'newService':editService();break;
+case'deleteService':deleteService(Number(id));break;
 case'close':modal.close();break;
 case'detail':detail(id);break;
 case'cancel':show(modalHead('¿Cancelar esta atención?')+`<p>La visita ${esc(id)} dejará de aparecer entre tus próximas atenciones. El pago simulado quedará pendiente de revisión para devolución.</p><div class="modalfoot"><button class="button secondary" data-action="close">Conservar visita</button><button class="button danger" data-action="confirmCancel" data-id="${esc(id)}">Sí, cancelar</button></div>`);break;
@@ -90,7 +138,8 @@ case'chooseDocumentFile':filePickerOpen=true;$('#documentFile')?.click();break;
 document.addEventListener('input',e=>{if(e.target.id==='search'){search=e.target.value;$('#catalogResults').innerHTML=filteredServices()}if(e.target.id==='comment'){const counter=$('#reviewCommentCount');if(counter)counter.textContent=`${e.target.value.length}/300`}});
 document.addEventListener('change',e=>{if(e.target.id==='category'){category=e.target.value;$('#catalogResults').innerHTML=filteredServices()}if(e.target.id==='documentFile'){filePickerOpen=false;selectedDocumentFile=e.target.files[0]||selectedDocumentFile;const label=$('#documentFileName');if(label)label.textContent=selectedDocumentFile?.name||'Ningún archivo seleccionado'}});
 document.addEventListener('submit',e=>{
- if(e.target.id==='reserveForm'){e.preventDefault();if(busy)return;const f=new FormData(e.target);if(f.get('date')<day(1)){toast('Selecciona una fecha desde mañana.');return}
+ if(['serviceEditForm','serviceDeleteForm'].includes(e.target.id)){e.preventDefault();saveService(e.target);
+ }else if(e.target.id==='reserveForm'){e.preventDefault();if(busy)return;const f=new FormData(e.target);if(f.get('date')<day(1)){toast('Selecciona una fecha desde mañana.');return}
  draft={service:Number(f.get('service')),date:f.get('date'),time:f.get('time'),address:f.get('address'),accepted:f.get('consent')==='on',payment_key:paymentId()};const s=services.find(s=>s.id===draft.service);
  show(modalHead('Confirma tu reserva')+`<p class="muted">2 de 2 · Revisa los datos y continúa al pago.</p><div class="summary"><div><span>Servicio</span><b>${esc(s.name)}</b></div><div><span>Fecha</span><b>${dateLabel(draft.date)} · ${esc(draft.time)}</b></div><div><span>Total</span><strong>${money(s.price)}</strong></div></div><div class="notice">Continuarás a la plataforma segura de Flow en ambiente sandbox. No se aceptan datos de tarjetas en GoClinical.</div><p id="paymentState" role="status"></p><div class="modalfoot"><button class="button secondary" data-action="close">Volver</button><button class="button" data-action="pay">Pagar con Flow →</button></div>`);
  }else if(e.target.id==='professionalApplicationForm'){e.preventDefault();if(busy)return;const form=e.target;const files=[form.elements.credential.files[0],form.elements.cv.files[0]];if(files.some(file=>!file)){toast('Adjunta el título o certificado y el currículum vitae.');return}if(files.some(file=>file.size>10*1024*1024)){toast('Cada documento debe pesar como máximo 10 MiB.');return}perform(async()=>{const response=await fetch('/api/applications/',{method:'POST',credentials:'same-origin',headers:{'X-CSRFToken':csrf()},body:new FormData(form)});let payload;try{payload=await response.json()}catch{throw new Error('El servidor no respondió correctamente al enviar la postulación.')}if(!response.ok)throw new Error(payload.error||'No se pudo enviar la postulación.');await refresh();render();toast('Postulación enviada. La clínica revisará tus antecedentes.');});
@@ -107,7 +156,7 @@ modal.addEventListener('click',e=>{if(e.target===modal){const r=modal.getBoundin
 const menus={
  paciente:[['inicio','⌂','Inicio'],['servicios','✚','Servicios'],['paciente','▣','Mis solicitudes'],['postulacion','♙','Postular a profesional'],['perfil','♡','Mi perfil'],['pagos','◫','Historial de pagos'],['ayuda','?','Ayuda y soporte']],
  profesional:[['inicio','⌂','Inicio'],['profesional','▣','Agendamiento'],['disponibilidad','◷','Mis horarios'],['servicios','✚','Servicios'],['perfil','♡','Mi perfil'],['honorarios','◫','Facturación'],['ayuda','?','Ayuda y soporte']],
- admin:[['inicio','⌂','Inicio'],['cuentas','♙','Gestión de cuentas'],['solicitudes','▣','Solicitudes de servicio'],['reportes','▥','Informes y estadísticas'],['clientes','♡','Públicos / Clientes'],['facturacion','◫','Facturación y pagos'],['comentarios','▤','Comentarios'],['ayuda','?','Ayuda y soporte']]
+ admin:[['inicio','⌂','Inicio'],['servicios','✚','Servicios'],['cuentas','♙','Gestión de cuentas'],['solicitudes','▣','Solicitudes de servicio'],['reportes','▥','Informes y estadísticas'],['clientes','♡','Públicos / Clientes'],['facturacion','◫','Facturación y pagos'],['comentarios','▤','Comentarios'],['ayuda','?','Ayuda y soporte']]
 };
 const roleName={paciente:'Paciente',profesional:'Profesional',admin:'Administración'};
 $('#roleLabel').textContent='PORTAL '+roleName[role].toUpperCase();
@@ -115,7 +164,7 @@ $('#roleNav').innerHTML=menus[role].map(([id,icon,label])=>`<a href="#${id}" dat
 let calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1), selectedDate='';
 function calendar(){const y=calendarMonth.getFullYear(),m=calendarMonth.getMonth(),days=new Date(y,m+1,0).getDate(),offset=(new Date(y,m,1).getDay()+6)%7;return `<div class="card calendar"><div class="calhead"><button data-action="month" data-id="-1" aria-label="Mes anterior">‹</button><span>${calendarMonth.toLocaleDateString('es-CL',{month:'long',year:'numeric'})}</span><button data-action="month" data-id="1" aria-label="Mes siguiente">›</button></div><div class="calgrid">${['L','M','M','J','V','S','D'].map(x=>`<small>${x}</small>`).join('')}${'<span class="blank"></span>'.repeat(offset)}${Array.from({length:days},(_,i)=>{const date=`${y}-${String(m+1).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`;return `<button class="${state.appointments.some(a=>a.date===date&&a.status!=='Cancelada')?'hasvisit':''} ${selectedDate===date?'chosen':''}" data-action="calendar" data-id="${date}" aria-label="Ver visitas del ${date}">${i+1}</button>`}).join('')}</div><div class="calendar-note">Turquesa: hay atenciones programadas.</div><button class="textbtn" data-action="clearDate">Ver todas las fechas</button></div>`}
 function upcoming(pro=false){const list=state.appointments.filter(a=>!['Finalizada','Cancelada'].includes(a.status)&&(!selectedDate||a.date===selectedDate));return list.length?list.map(a=>appointment(a,pro)).join(''):`<div class="empty">No hay atenciones para ${selectedDate?dateLabel(selectedDate):'mostrar'}.</div>`}
-function patientHome(){const notices=state.appointments.filter(a=>a.status==='Cancelada'&&a.patient_notice).map(a=>`<div class="card" role="status"><h2>Atención cancelada · ${esc(a.id)}</h2><p>${esc(a.patient_notice)}</p><a class="textbtn" href="#servicios">Volver a agendar →</a></div>`).join('');return heading('PACIENTE · GOCLINICAL','Hola, '+esc(currentUser.name.split(' ')[0])+'.','¿Qué cuidado necesitas hoy?',bookButton)+notices+`<section class="hero"><div class="herotext"><div class="eyebrow">PROFESIONALES EN TU HOGAR</div><h2>Tu próxima atención,<br>sin salir de casa.</h2><p>Consulta nuestros servicios y coordina una visita. Revisa el estado de cada solicitud desde tu portal.</p><a href="#servicios" class="button">Solicitar un servicio →</a></div>${art}</section><div class="sectionhead"><h2>Mis próximas atenciones</h2><a href="#paciente">Ver solicitudes →</a></div><div class="dashboardgrid"><div>${upcoming()}</div>${calendar()}</div><div class="sectionhead"><h2>Categorías y servicios</h2></div><div class="grid3">${services.slice(0,3).map(serviceCard).join('')}</div>`}
+function patientHome(){const notices=state.appointments.filter(a=>a.status==='Cancelada'&&a.patient_notice).map(a=>`<div class="card" role="status"><h2>Atención cancelada · ${esc(a.id)}</h2><p>${esc(a.patient_notice)}</p><a class="textbtn" href="#servicios">Volver a agendar →</a></div>`).join('');return heading('PACIENTE · GOCLINICAL','Hola, '+esc(currentUser.name.split(' ')[0])+'.','¿Qué cuidado necesitas hoy?',bookButton())+notices+`<section class="hero"><div class="herotext"><div class="eyebrow">PROFESIONALES EN TU HOGAR</div><h2>Tu próxima atención,<br>sin salir de casa.</h2><p>Consulta nuestros servicios y coordina una visita. Revisa el estado de cada solicitud desde tu portal.</p><a href="#servicios" class="button">Solicitar un servicio →</a></div>${art}</section><div class="sectionhead"><h2>Mis próximas atenciones</h2><a href="#paciente">Ver solicitudes →</a></div><div class="dashboardgrid"><div>${upcoming()}</div>${calendar()}</div><div class="sectionhead"><h2>Categorías y servicios</h2></div><div class="grid3">${activeServices().slice(0,3).map(serviceCard).join('')}</div>`}
 function professionalHome(){const finished=state.appointments.filter(a=>a.status==='Finalizada');return heading('PROFESIONAL · GOCLINICAL','Bienvenida, '+esc(currentUser.name.split(' ')[0])+'.','Tus atenciones, agenda y prestaciones.')+`<div class="role-strip"><strong>Profesional habilitado</strong><span>Enfermería · Disponibilidad administrada por ti</span><a href="#disponibilidad" class="textbtn">Configurar horarios →</a></div><div class="stats">${stat('◷',state.appointments.filter(a=>!['Finalizada','Cancelada'].includes(a.status)).length,'Próximas atenciones')}${stat('✓',finished.length,'Prestaciones finalizadas')}${stat('◫',money(finished.reduce((n,a)=>n+a.price*.7,0)),'Honorarios ilustrativos')}</div><div class="sectionhead"><h2>Mi agenda programada</h2><a href="#profesional">Ver agendamiento →</a></div><div class="dashboardgrid"><div>${upcoming(true)}</div>${calendar()}</div>`}
 function tableAppointments(payment=false){return `<div class="tablewrap"><table><thead><tr><th>FOLIO / FECHA</th><th>SERVICIO</th><th>PACIENTE</th><th>${payment?'MONTO CLP':'PROFESIONAL'}</th><th>ESTADO</th><th></th></tr></thead><tbody>${state.appointments.map(a=>`<tr><td>${a.id}<small>${dateLabel(a.date)} · ${a.time}</small></td><td>${esc(services.find(s=>s.id===a.service)?.name||'Servicio')}</td><td>${esc(a.patient)}</td><td>${payment?money(a.price):esc(a.professional)}</td><td>${payment?badge(a.paid?'Pagado':a.payment_status==='rejected'?'Pago rechazado':a.payment_status==='cancelled'?'Pago cancelado':'Pago pendiente'):badge(a.status==='Cancelada'?'Cancelada':a.status)}</td><td><button class="textbtn" data-action="detail" data-id="${a.id}">Ver detalle ↗</button></td></tr>`).join('')||'<tr><td colspan="6">No hay registros.</td></tr>'}</tbody></table></div>`}
 function reports(){const statuses=['Confirmada','En camino','En atención','Finalizada','Cancelada'];const values=statuses.map(s=>state.appointments.filter(a=>a.status===s).length);const max=Math.max(1,...values);return `<div class="dashboardgrid"><div class="card"><div class="eyebrow">ACTIVIDAD REGISTRADA</div><h2>Atenciones por estado</h2><div class="chartbars">${statuses.map((s,i)=>`<div><b>${values[i]}</b><div class="barcol" style="height:${Math.max(4,values[i]/max*125)}px"></div><span>${s}</span></div>`).join('')}</div><p class="muted" style="font-size:11px;margin-top:25px">Conteo de los registros. Se actualiza al cambiar una atención.</p></div><div class="card"><div class="eyebrow">PAGOS CONFIRMADOS EN FLOW</div><h2>${money(state.appointments.filter(a=>a.paid).reduce((n,a)=>n+a.price,0))}</h2><p class="muted">Importe de pagos confirmados por Flow.</p><div class="summary"><div><span>Pagos pendientes</span><b>${state.appointments.filter(a=>a.payment_status==='pending').length}</b></div><div><span>Boletas ficticias recibidas</span><b>${state.bills.length}</b></div></div></div></div>`}
@@ -179,3 +228,172 @@ document.addEventListener('click',e=>{const b=e.target.closest('[data-action]');
 route();
 const flowResult=new URLSearchParams(location.search).get('flow_payment');
 if(flowResult){toast(({paid:'Pago confirmado por Flow.',pending:'Flow aún no confirma el pago.',rejected:'Flow rechazó el pago.',cancelled:'El pago fue cancelado en Flow.',error:'No se pudo verificar el pago. Revisa tus atenciones.'})[flowResult]||'Estado de pago actualizado.');history.replaceState(null,'',location.pathname+location.hash)}
+
+
+let servicePreviewUrl = '';
+
+function releaseServicePreview() {
+ if (servicePreviewUrl) URL.revokeObjectURL(servicePreviewUrl);
+ servicePreviewUrl = '';
+}
+
+function updateServicePreview(form, service) {
+ releaseServicePreview();
+ const file = form.elements.image.files[0];
+ const remove = form.elements.remove_image?.checked;
+ const image = form.querySelector('.service-preview img');
+ const placeholder = form.querySelector('.service-preview-placeholder');
+ const url = remove ? '' : file ? (servicePreviewUrl = URL.createObjectURL(file)) : service.image_url;
+ image.hidden = !url;
+ placeholder.hidden = Boolean(url);
+ if (url) image.src = url;
+ else image.removeAttribute('src');
+}
+
+function editService(id = null) {
+    if (role !== 'admin') return;
+    const creating = id === null;
+    const service = creating
+        ? {name: '', price: '', image_url: '', icon: '✚', category: '', desc: '', duration: 30}
+        : services.find(item => item.id === id && item.is_active !== false);
+    if (!service) {
+        modal.close();
+        render();
+        toast('El servicio ya no está disponible.');
+        return;
+    }
+    releaseServicePreview();
+    const createFields = creating ? `
+        <label for="serviceCategory">Categoría</label>
+        <input id="serviceCategory" name="category" list="serviceCategories" maxlength="50" required>
+        <datalist id="serviceCategories">${serviceCategories().map(value => `<option value="${esc(value)}"></option>`).join('')}</datalist>
+        <label for="serviceDescription">Descripción</label>
+        <textarea id="serviceDescription" name="description" maxlength="250" rows="3" required></textarea>
+        <label for="serviceDuration">Duración en minutos</label>
+        <input id="serviceDuration" name="duration" type="number" min="1" max="2147483647" step="1" value="30" required>
+    ` : '';
+    show(modalHead(creating ? 'Agregar servicio' : 'Editar servicio') + `
+        <form id="serviceEditForm" class="service-editor" data-id="${creating ? '' : service.id}" enctype="multipart/form-data">
+            ${creating
+                ? `<input type="hidden" name="creation_key" value="${paymentId()}">`
+                : `<input type="hidden" name="revision" value="${esc(service.revision)}">`}
+            <label for="serviceName">Nombre del servicio</label>
+            <input id="serviceName" name="name" maxlength="100" value="${esc(service.name)}" required>
+            ${createFields}
+            <label for="servicePrice">Precio en pesos chilenos</label>
+            <input id="servicePrice" name="price" type="number" min="1" max="2147483647" step="1" required value="${service.price}" aria-describedby="servicePriceHelp">
+            <p id="servicePriceHelp" class="muted service-help">El precio se aplicará a las próximas reservas.</p>
+            <label for="serviceImage">Imagen del servicio</label>
+            <div class="service-preview">
+                <img alt="Vista previa del servicio" ${service.image_url ? `src="${esc(service.image_url)}"` : 'hidden'}>
+                <div class="service-preview-placeholder" ${service.image_url ? 'hidden' : ''} aria-label="Servicio sin imagen">${esc(service.icon)}</div>
+            </div>
+            <input id="serviceImage" name="image" type="file" accept="image/jpeg,image/png,image/webp" aria-describedby="serviceImageHelp">
+            <p id="serviceImageHelp" class="muted service-help">JPG, PNG o WebP de hasta 5 MiB y 16 megapíxeles.</p>
+            ${service.image_url ? '<label class="checklabel service-remove"><input type="checkbox" name="remove_image"><span>Quitar imagen actual</span></label>' : ''}
+            <p class="service-save-error" role="alert" hidden></p>
+            <button type="button" class="textbtn service-reload" data-action="editService" data-id="${creating ? '' : service.id}" hidden>Cargar última versión</button>
+            <div class="modalfoot">
+                <button type="button" class="button secondary" data-action="close">Cancelar</button>
+                <button type="submit" class="button">${creating ? 'Crear servicio' : 'Guardar cambios'}</button>
+            </div>
+        </form>`);
+    const form = document.getElementById('serviceEditForm');
+    form.elements.image.addEventListener('change', () => {
+        if (form.elements.image.files.length && form.elements.remove_image) form.elements.remove_image.checked = false;
+        updateServicePreview(form, service);
+    });
+    form.elements.remove_image?.addEventListener('change', () => {
+        if (form.elements.remove_image.checked) form.elements.image.value = '';
+        updateServicePreview(form, service);
+    });
+}
+
+function deleteService(id) {
+    if (role !== 'admin') return;
+    const service = services.find(item => item.id === id && item.is_active !== false);
+    if (!service) {
+        modal.close();
+        render();
+        toast('El servicio ya fue eliminado del catálogo.');
+        return;
+    }
+    show(modalHead('Eliminar servicio') + `
+        <form id="serviceDeleteForm" data-id="${service.id}">
+            <input type="hidden" name="revision" value="${esc(service.revision)}">
+            <p>¿Eliminar <strong>${esc(service.name)}</strong> del catálogo?</p>
+            <p class="muted">Dejará de ofrecerse para nuevas reservas. Las atenciones y los pagos anteriores se conservarán en el historial.</p>
+            <p class="service-save-error" role="alert" hidden></p>
+            <button type="button" class="textbtn service-reload" data-action="deleteService" data-id="${service.id}" hidden>Revisar última versión</button>
+            <div class="modalfoot">
+                <button type="button" class="button secondary" data-action="close">Cancelar</button>
+                <button type="submit" class="button danger">Eliminar servicio</button>
+            </div>
+        </form>`);
+}
+
+async function saveService(form) {
+    if (busy || role !== 'admin') return;
+    const deleting = form.id === 'serviceDeleteForm';
+    const creating = !deleting && !form.dataset.id;
+    const errorMessage = form.querySelector('.service-save-error');
+    const submit = form.querySelector('[type="submit"]');
+    const file = form.elements.image?.files[0];
+    errorMessage.hidden = true;
+    form.querySelectorAll('[aria-invalid]').forEach(input => input.removeAttribute('aria-invalid'));
+    if (file && file.size > 5 * 1024 * 1024) {
+        errorMessage.textContent = 'La imagen debe pesar como máximo 5 MiB.';
+        errorMessage.hidden = false;
+        return;
+    }
+    const data = new FormData(form);
+    const url = creating ? '/api/services/'
+        : deleting ? `/api/services/${form.dataset.id}/delete/` : `/api/services/${form.dataset.id}/`;
+    const submitLabel = submit.textContent;
+    const controls = [...form.querySelectorAll('input, textarea, button')];
+    busy = true;
+    controls.forEach(control => {control.disabled = true;});
+    submit.textContent = deleting ? 'Eliminando…' : 'Guardando…';
+    document.body.setAttribute('aria-busy', 'true');
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'X-CSRFToken': csrf()},
+            body: data,
+        });
+        let payload;
+        try {
+            payload = await response.json();
+        } catch {
+            throw new Error('El servidor no respondió correctamente. Intenta nuevamente.');
+        }
+        if (!response.ok) {
+            if (payload.services) services = payload.services;
+            form.querySelector('.service-reload').hidden = response.status !== 409 || !payload.services;
+            for (const field of Object.keys(payload.errors || {})) {
+                form.elements.namedItem(field)?.setAttribute('aria-invalid', 'true');
+            }
+            const messages = Object.values(payload.errors || {}).flat();
+            throw new Error(messages.join(' ') || payload.error || 'No se pudo guardar el servicio.');
+        }
+        services = payload.services;
+        if (creating) {
+            search = '';
+            category = '';
+        }
+        modal.close();
+        render();
+        toast(deleting ? 'Servicio eliminado del catálogo.' : creating ? 'Servicio creado.' : 'Servicio actualizado.');
+    } catch (error) {
+        errorMessage.textContent = error.message || 'No se pudo conectar con el servidor.';
+        errorMessage.hidden = false;
+    } finally {
+        busy = false;
+        controls.forEach(control => {control.disabled = false;});
+        submit.textContent = submitLabel;
+        document.body.removeAttribute('aria-busy');
+    }
+}
+
+modal.addEventListener('close', releaseServicePreview);
